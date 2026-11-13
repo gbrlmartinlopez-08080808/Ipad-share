@@ -15,15 +15,16 @@ internal sealed class OnboardingWindow : Form
     private readonly Panel _host = new();
     private readonly PillButton _back = new() { Text = "Back" };
     private readonly PillButton _next = new() { Text = "Next", Primary = true };
-    private readonly Label _dots = new();
+    private readonly StepDots _dots = new();
     private readonly List<Func<Control>> _pages;
     private int _page;
 
     // live-updated widgets on the current page
     private StatusPill? _pairPill;
-    private Label? _tryLabel;
+    private Label? _pairDetail;
+    private CheckLine? _tryLabel;
     private bool _wasOnIpad, _triedCrossing;
-    private Label? _btLabel;
+    private CheckLine? _btLabel;
     private ArrangementView? _arr;
 
     public OnboardingWindow(AppController app, TrayApp tray, int startPage)
@@ -48,10 +49,7 @@ internal sealed class OnboardingWindow : Form
         _host.BackColor = Theme.Background;
         Controls.Add(_host);
 
-        _dots.SetBounds(30, 500, 160, 30);
-        _dots.ForeColor = Theme.SubText;
-        _dots.TextAlign = ContentAlignment.MiddleLeft;
-        _dots.Font = Theme.Body(12f);
+        _dots.SetBounds(30, 505, 160, 20);
         Controls.Add(_dots);
 
         _back.SetBounds(W + 30 - 230, 498, 100, 34);
@@ -81,7 +79,7 @@ internal sealed class OnboardingWindow : Form
     {
         if (page < 0 || page >= _pages.Count) return;
         _page = page;
-        _pairPill = null; _tryLabel = null; _btLabel = null; _arr = null;
+        _pairPill = null; _pairDetail = null; _tryLabel = null; _btLabel = null; _arr = null;
         _host.SuspendLayout();
         foreach (Control c in _host.Controls) c.Dispose();
         _host.Controls.Clear();
@@ -91,7 +89,7 @@ internal sealed class OnboardingWindow : Form
         _host.ResumeLayout();
         _back.Visible = page > 0;
         _next.Text = page == _pages.Count - 1 ? "Finish" : "Next";
-        _dots.Text = string.Concat(Enumerable.Range(0, _pages.Count).Select(i => i == page ? "● " : "○ "));
+        _dots.Set(_pages.Count, page);
         UpdateLive();
     }
 
@@ -123,13 +121,13 @@ internal sealed class OnboardingWindow : Form
 
     private static Label P(string text, bool sub = true) => new()
     {
-        Text = text, AutoSize = true, MaximumSize = new Size(W, 0), ForeColor = sub ? Theme.SubText : Theme.Text,
+        Text = text, AutoSize = true, MaximumSize = new Size(W - 24, 0), ForeColor = sub ? Theme.SubText : Theme.Text,
         Margin = new Padding(0, 0, 0, 12),
     };
 
     private static Label Step(string n, string text) => new()
     {
-        Text = $"{n}   {text}", AutoSize = true, MaximumSize = new Size(W, 0), ForeColor = Theme.Text,
+        Text = $"{n}   {text}", AutoSize = true, MaximumSize = new Size(W - 24, 0), ForeColor = Theme.Text,
         Font = Theme.Body(10.5f), Margin = new Padding(0, 4, 0, 8),
     };
 
@@ -140,13 +138,13 @@ internal sealed class OnboardingWindow : Form
         s.Controls.Add(H1("Use your laptop with your iPad"));
         s.Controls.Add(P("Move the pointer past the edge of your screen and your laptop's keyboard and trackpad control the iPad. " +
                          "Nothing is installed on the iPad: it sees your laptop as a Bluetooth keyboard and trackpad."));
-        _btLabel = P("Checking Bluetooth…", sub: false);
+        _btLabel = new CheckLine(CheckKind.Pending, "Checking Bluetooth…", W - 24);
         s.Controls.Add(_btLabel);
         var pad = _app.Touchpads.FirstOrDefault();
-        s.Controls.Add(P(pad != null
-            ? $"✓  Precision touchpad found ({pad.Geometry.WidthMm:0} × {pad.Geometry.HeightMm:0} mm). Gestures will be tuned to it."
-            : "!  No Precision Touchpad was found. Pointer and scrolling still work; multi-finger gestures need a precision touchpad.", sub: false));
-        s.Controls.Add(P("✓  Keyboard ready.", sub: false));
+        s.Controls.Add(pad != null
+            ? new CheckLine(CheckKind.Ok, $"Precision touchpad found ({pad.Geometry.WidthMm:0} × {pad.Geometry.HeightMm:0} mm). Gestures will be tuned to it.", W)
+            : new CheckLine(CheckKind.Warn, "No Precision Touchpad was found. Pointer and scrolling still work; multi-finger gestures need a precision touchpad.", W - 24));
+        s.Controls.Add(new CheckLine(CheckKind.Ok, "Keyboard ready.", W - 24));
         _ = ProbeBluetooth();
         return s;
     }
@@ -157,10 +155,9 @@ internal sealed class OnboardingWindow : Form
         var (ok, message) = await BleHidPeripheral.ProbeAsync();
         bool bridge = BridgeTransport.FindBridgePorts().Count > 0;
         if (label == null || label.IsDisposed) return;
-        label.Text = ok ? "✓  " + message
-            : bridge ? "✓  USB bridge found — it will be used for the connection."
-            : "✗  " + message + " See the README for the US$8 USB bridge option.";
-        label.ForeColor = ok || bridge ? Theme.Text : Theme.Bad;
+        if (ok) label.Set(CheckKind.Ok, message);
+        else if (bridge) label.Set(CheckKind.Ok, "USB bridge found. It will be used for the connection.");
+        else label.Set(CheckKind.Bad, message + " See the README for the US$8 USB bridge option.");
     }
 
     private Control Pair()
@@ -171,9 +168,12 @@ internal sealed class OnboardingWindow : Form
         s.Controls.Add(Step("2", $"Under Other Devices, tap “{Environment.MachineName}”."));
         s.Controls.Add(Step("3", "If Windows asks to pair or allow the device, choose Allow."));
         s.Controls.Add(P("You only do this once. Afterwards the iPad reconnects by itself whenever iPad Share is running."));
-        _pairPill = new StatusPill { Margin = new Padding(0, 6, 0, 14) };
+        _pairPill = new StatusPill { Margin = new Padding(0, 6, 0, 4) };
         s.Controls.Add(_pairPill);
-        s.Controls.Add(P("Paired before but it won't connect? On the iPad tap ⓘ next to the laptop › Forget This Device, then pair again."));
+        _pairDetail = P("", sub: true);
+        _pairDetail.Margin = new Padding(0, 4, 0, 12);
+        s.Controls.Add(_pairDetail);
+        s.Controls.Add(P("Paired before but it won't connect? On the iPad tap the (i) next to the laptop › Forget This Device, then pair again."));
         return s;
     }
 
@@ -209,7 +209,7 @@ internal sealed class OnboardingWindow : Form
         string side = _app.Settings.Arrangement.Side.ToString().ToLowerInvariant();
         s.Controls.Add(P($"Move the pointer to the {side} edge of your screen and keep pushing a little. A blue glow builds up, then the pointer appears on your iPad."));
         s.Controls.Add(P("To come back, move the pointer back past the same edge of the iPad. Ctrl+Alt+Space also switches."));
-        _tryLabel = new Label { AutoSize = true, MaximumSize = new Size(W, 0), Font = Theme.Semibold(11f), Margin = new Padding(0, 10, 0, 0) };
+        _tryLabel = new CheckLine(CheckKind.Pending, "Waiting for you to cross the edge…", W - 24) { Margin = new Padding(0, 10, 0, 0) };
         s.Controls.Add(_tryLabel);
         _wasOnIpad = _app.Status.OnIpad;
         _triedCrossing = false;
@@ -239,7 +239,7 @@ internal sealed class OnboardingWindow : Form
         var no = new PillButton { Text = "No, use translated" };
         yes.FitToText(); no.FitToText();
         answers.Controls.Add(yes); answers.Controls.Add(no);
-        var result = P("", sub: false);
+        var result = new CheckLine(CheckKind.Ok, "", W - 24) { Visible = false };
         test.Click += (_, _) =>
         {
             _app.UpdateSettings(x => x.TrackpadMode = TrackpadMode.Native);
@@ -248,13 +248,15 @@ internal sealed class OnboardingWindow : Form
         yes.Click += (_, _) =>
         {
             _app.UpdateSettings(x => { x.TrackpadMode = TrackpadMode.Native; x.NativeModeVerified = true; });
-            result.Text = "✓  iPad-native gestures are on.";
+            result.Set(CheckKind.Ok, "iPad-native gestures are on.");
+            result.Visible = true;
             answers.Visible = false;
         };
         no.Click += (_, _) =>
         {
             _app.UpdateSettings(x => { x.TrackpadMode = TrackpadMode.Translated; x.NativeModeVerified = false; });
-            result.Text = "✓  Using translated gestures — they work on every iPad.";
+            result.Set(CheckKind.Ok, "Using translated gestures. They work on every iPad.");
+            result.Visible = true;
             answers.Visible = false;
         };
         s.Controls.Add(test);
@@ -269,10 +271,10 @@ internal sealed class OnboardingWindow : Form
     {
         var s = Stack();
         s.Controls.Add(H1("You're all set"));
-        s.Controls.Add(P("•  Ctrl+Alt+Space jumps between your laptop and the iPad.", sub: false));
-        s.Controls.Add(P("•  Set the iPad's keyboard layout to match your laptop: on the iPad, Settings › General › Keyboard › Hardware Keyboard.", sub: false));
-        s.Controls.Add(P("•  For the most precise handoff, run Calibrate under Switching (20 seconds in Safari, nothing to install).", sub: false));
-        s.Controls.Add(P("•  iPad Share lives in the tray (^) and starts with Windows, so your iPad reconnects by itself.", sub: false));
+        s.Controls.Add(new CheckLine(CheckKind.Bullet, "Ctrl+Alt+Space jumps between your laptop and the iPad.", W - 24));
+        s.Controls.Add(new CheckLine(CheckKind.Bullet, "Set the iPad's keyboard layout to match your laptop: on the iPad, Settings › General › Keyboard › Hardware Keyboard.", W - 24));
+        s.Controls.Add(new CheckLine(CheckKind.Bullet, "For the most precise handoff, run Calibrate under Switching (20 seconds in Safari, nothing to install).", W - 24));
+        s.Controls.Add(new CheckLine(CheckKind.Bullet, "iPad Share lives in the tray (^) and starts with Windows, so your iPad reconnects by itself.", W - 24));
         var cal = new PillButton { Text = "Calibrate now", Margin = new Padding(0, 8, 0, 0) };
         cal.FitToText();
         cal.Click += (_, _) => _tray.ShowCalibration();
@@ -298,33 +300,25 @@ internal sealed class OnboardingWindow : Form
                     _pairPill.Set("Starting Bluetooth…", Theme.SubText);
                     break;
                 default:
-                    _pairPill.Set(st.Detail ?? "Bluetooth isn't ready", Theme.Bad);
+                    _pairPill.Set("Bluetooth not available", Theme.Bad);
                     break;
             }
+            if (_pairDetail != null)
+                _pairDetail.Text = st.Transport is TransportState.Unavailable or TransportState.Error ? st.Detail ?? "" : "";
         }
         if (_tryLabel != null)
         {
             if (st.Transport != TransportState.Connected)
-            {
-                _tryLabel.Text = "Connect your iPad first (previous step).";
-                _tryLabel.ForeColor = Theme.Warn;
-            }
+                _tryLabel.Set(CheckKind.Warn, "Connect your iPad first (previous step).");
             else if (st.OnIpad)
             {
                 _triedCrossing = true;
-                _tryLabel.Text = "✓  You're on the iPad! Now move back the same way.";
-                _tryLabel.ForeColor = Theme.Good;
+                _tryLabel.Set(CheckKind.Ok, "You're on the iPad! Now move back the same way.");
             }
             else if (_triedCrossing)
-            {
-                _tryLabel.Text = "✓  Perfect — that's all there is to it.";
-                _tryLabel.ForeColor = Theme.Good;
-            }
+                _tryLabel.Set(CheckKind.Ok, "Perfect. That's all there is to it.");
             else
-            {
-                _tryLabel.Text = "Waiting for you to cross the edge…";
-                _tryLabel.ForeColor = Theme.SubText;
-            }
+                _tryLabel.Set(CheckKind.Pending, "Waiting for you to cross the edge…");
             _wasOnIpad = st.OnIpad;
         }
         _arr?.SetOnIpad(st.OnIpad);

@@ -80,17 +80,28 @@ internal static class SystemInfo
         catch { return new TouchpadPrefs(null, null, null, null, null); }
     }
 
-    /// <summary>True when the lock screen, UAC or another secure desktop has the input.</summary>
+    private static string? s_ownDesktop;
+
+    private static string? DesktopName(IntPtr desktop)
+    {
+        var buf = new char[256];
+        if (!GetUserObjectInformation(desktop, UOI_NAME, buf, (uint)(buf.Length * 2), out _)) return null;
+        return new string(buf).TrimEnd('\0');
+    }
+
+    /// <summary>
+    /// True when the lock screen, UAC or another secure desktop has the input: the input desktop is no
+    /// longer the desktop this app runs on (normally "Default"), or it can't even be opened.
+    /// </summary>
     public static bool SecureDesktopActive()
     {
+        s_ownDesktop ??= DesktopName(GetThreadDesktop(GetCurrentThreadId())) ?? "Default";
         IntPtr d = OpenInputDesktop(0, false, DESKTOP_READOBJECTS);
-        if (d == IntPtr.Zero) return true;   // can't open → not our desktop
+        if (d == IntPtr.Zero) return true;   // access denied → a secure desktop
         try
         {
-            var buf = new char[256];
-            if (!GetUserObjectInformation(d, UOI_NAME, buf, (uint)(buf.Length * 2), out _)) return false;
-            var name = new string(buf).TrimEnd('\0');
-            return !name.Equals("Default", StringComparison.OrdinalIgnoreCase);
+            var name = DesktopName(d);
+            return name != null && !name.Equals(s_ownDesktop, StringComparison.OrdinalIgnoreCase);
         }
         finally { CloseDesktop(d); }
     }

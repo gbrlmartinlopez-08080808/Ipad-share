@@ -72,8 +72,8 @@ internal sealed class ArrangementView : DrawnControl
         if (mon != null)
         {
             // keep room for the iPad on every side so dragging around doesn't rescale the view
-            double pad = Math.Max(mon.Bounds.Width, mon.Bounds.Height) * 0.75;
-            Inc(new RectD(minX - pad, minY - pad * 0.6, (maxX - minX) + 2 * pad, (maxY - minY) + 1.2 * pad));
+            double pad = Math.Max(mon.Bounds.Width, mon.Bounds.Height) * 0.5;
+            Inc(new RectD(minX - pad, minY - pad * 0.5, (maxX - minX) + 2 * pad, (maxY - minY) + pad));
         }
         if (minX == double.MaxValue) return (1, 0, 0);
         float m2 = S(10);
@@ -114,6 +114,14 @@ internal sealed class ArrangementView : DrawnControl
         var ip = _ipadView;
         ip.Inflate(-S(1.5f), -S(1.5f));
 
+        using (var path = Theme.RoundRect(ip, S(7)))
+        {
+            var fill = Theme.Blend(Theme.Card, Theme.Accent, _onIpad ? 0.35 : 0.18);
+            using var b = new SolidBrush(fill);
+            g.FillPath(b, path);
+            using var p = new Pen(Theme.Accent, S(_dragging ? 2.2f : 1.6f));
+            g.DrawPath(p, path);
+        }
         // crossing segment highlight
         if (!_dragging)
         {
@@ -124,21 +132,13 @@ internal sealed class ArrangementView : DrawnControl
             var mb = ToView(mon.Bounds, t);
             switch (_side)
             {
-                case EdgeSide.Right: g.DrawLine(hp, mb.Right - S(1), a0 + t.oy, mb.Right - S(1), a1 + t.oy); break;
-                case EdgeSide.Left: g.DrawLine(hp, mb.Left + S(1), a0 + t.oy, mb.Left + S(1), a1 + t.oy); break;
-                case EdgeSide.Bottom: g.DrawLine(hp, a0 + t.ox, mb.Bottom - S(1), a1 + t.ox, mb.Bottom - S(1)); break;
-                default: g.DrawLine(hp, a0 + t.ox, mb.Top + S(1), a1 + t.ox, mb.Top + S(1)); break;
+                case EdgeSide.Right: g.DrawLine(hp, mb.Right - S(3), a0 + t.oy, mb.Right - S(3), a1 + t.oy); break;
+                case EdgeSide.Left: g.DrawLine(hp, mb.Left + S(3), a0 + t.oy, mb.Left + S(3), a1 + t.oy); break;
+                case EdgeSide.Bottom: g.DrawLine(hp, a0 + t.ox, mb.Bottom - S(3), a1 + t.ox, mb.Bottom - S(3)); break;
+                default: g.DrawLine(hp, a0 + t.ox, mb.Top + S(3), a1 + t.ox, mb.Top + S(3)); break;
             }
         }
 
-        using (var path = Theme.RoundRect(ip, S(7)))
-        {
-            var fill = Theme.Blend(Theme.Card, Theme.Accent, _onIpad ? 0.35 : 0.18);
-            using var b = new SolidBrush(fill);
-            g.FillPath(b, path);
-            using var p = new Pen(Theme.Accent, S(_dragging ? 2.2f : 1.6f));
-            g.DrawPath(p, path);
-        }
         TextRenderer.DrawText(g, "iPad", Theme.Semibold(9f), Rectangle.Round(ip), Theme.Text,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }

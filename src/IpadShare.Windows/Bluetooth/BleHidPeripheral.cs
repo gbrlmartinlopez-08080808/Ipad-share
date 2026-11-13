@@ -42,6 +42,7 @@ internal sealed class BleHidPeripheral : IHidTransport
     private string? _peer;
     private int _mtu = 23;
     private bool _starting;
+    private string? _lastError;
     private CancellationTokenSource? _restartCts;
 
     public string Name => "Built-in Bluetooth";
@@ -71,9 +72,21 @@ internal sealed class BleHidPeripheral : IHidTransport
         }
         catch (Exception ex)
         {
-            return (false, "Bluetooth is not available: " + ex.Message);
+            return (false, FriendlyError(ex));
         }
     }
+
+    /// <summary>Turns WinRT/COM failures into something a person can act on.</summary>
+    public static string FriendlyError(Exception ex) => ex switch
+    {
+        NotImplementedException or TypeLoadException or PlatformNotSupportedException =>
+            "Windows Bluetooth isn't available on this PC (no compatible adapter or driver).",
+        UnauthorizedAccessException =>
+            "Windows blocked Bluetooth access. Check Settings › Privacy & security › Bluetooth.",
+        System.Runtime.InteropServices.COMException c when (uint)c.HResult == 0x8007048F =>
+            "The Bluetooth adapter is disabled or unplugged.",
+        _ => "Bluetooth error: " + ex.Message,
+    };
 
     public async Task StartAsync(CancellationToken ct)
     {
@@ -106,8 +119,11 @@ internal sealed class BleHidPeripheral : IHidTransport
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            Log.Error("BLE start failed", ex);
-            SetState(TransportState.Error, "Bluetooth error: " + ex.Message);
+            string message = FriendlyError(ex);
+            if (message != _lastError) Log.Error("BLE start failed", ex);   // don't repeat the same error on every retry
+            _lastError = message;
+            bool permanent = ex is NotImplementedException or TypeLoadException or PlatformNotSupportedException;
+            SetState(permanent ? TransportState.Unavailable : TransportState.Error, message);
             await TearDownAsync();
         }
         finally
@@ -207,6 +223,7 @@ internal sealed class BleHidPeripheral : IHidTransport
         _hid.AdvertisementStatusChanged += OnAdvertisementStatusChanged;
         _hid.StartAdvertising(new GattServiceProviderAdvertisingParameters { IsConnectable = true, IsDiscoverable = true });
         _battery?.StartAdvertising(new GattServiceProviderAdvertisingParameters { IsConnectable = true, IsDiscoverable = false });
+        _lastError = null;
         Log.Info($"BLE HID published ({ReportMap.Descriptor.Length}-byte report map), advertising as \"{AdapterName ?? Environment.MachineName}\"");
         SetState(TransportState.Advertising, null);
     }

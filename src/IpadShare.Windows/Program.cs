@@ -23,6 +23,8 @@ internal static class Program
             try { File.Delete(SettingsPath); } catch { }
         }
 
+        TransportManager.Simulate = args.Contains("--simulate-ipad", StringComparer.OrdinalIgnoreCase);
+
         using var single = new SingleInstance(() => TrayApp.Current?.ShowMainFromAnyThread());
         if (!single.IsFirst) return 0;
 

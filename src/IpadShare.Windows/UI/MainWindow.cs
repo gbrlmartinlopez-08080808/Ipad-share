@@ -26,7 +26,7 @@ internal sealed class MainWindow : Form
     private readonly Segmented _orientation = new() { Items = new[] { "Landscape", "Portrait" }, Width = 200 };
 
     // trackpad
-    private readonly Segmented _gestures = new() { Items = new[] { "Translated", "iPad-native (beta)" }, Width = 250 };
+    private readonly Segmented _gestures = new() { Items = new[] { "Translated", "iPad-native (beta)" }, Width = 290 };
     private readonly Slider _pointer = new() { Minimum = 0.25, Maximum = 3, Detent = 1, Width = 200 };
     private readonly Slider _scroll = new() { Minimum = 0.25, Maximum = 3, Detent = 1, Width = 200 };
     private readonly ToggleSwitch _reverse = new(), _momentum = new(), _tap = new(), _pinch = new(), _multi = new();
@@ -57,15 +57,15 @@ internal sealed class MainWindow : Form
         Icon = TrayApp.AppIcon;
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96, 96);
-        ClientSize = new Size(W + 56, 760);
-        MinimumSize = new Size(W + 72, 420);
+        ClientSize = new Size(W + 104, 760);          // cards (W + 36) + margins + vertical scrollbar
+        MinimumSize = new Size(W + 120, 420);
         StartPosition = FormStartPosition.CenterScreen;
         ShowInTaskbar = true;
         BackColor = Theme.Background;
         ForeColor = Theme.Text;
         Font = Theme.Body();
 
-        var scroller = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Theme.Background, Padding = new Padding(20, 16, 20, 16) };
+        var scroller = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Theme.Background, Padding = new Padding(20, 16, 0, 16) };
         var stack = new FlowLayoutPanel
         {
             FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,

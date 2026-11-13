@@ -37,7 +37,7 @@ internal sealed class DiagnosticsWindow : Form
         var refresh = new PillButton { Text = "Refresh", Margin = new Padding(0, 0, 8, 0) };
         var logs = new PillButton { Text = "Open log folder" };
         copy.FitToText(); refresh.FitToText(); logs.FitToText();
-        copy.Click += (_, _) => { try { Clipboard.SetText(_text.Text); copy.Text = "Copied ✓"; } catch { } };
+        copy.Click += (_, _) => { try { Clipboard.SetText(_text.Text); copy.Text = "Copied"; } catch { } };
         refresh.Click += (_, _) => Reload();
         logs.Click += (_, _) =>
         {

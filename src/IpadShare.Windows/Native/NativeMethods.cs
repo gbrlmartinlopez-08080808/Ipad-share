@@ -380,6 +380,8 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern bool GetUserObjectInformation(IntPtr hObj, int nIndex, [Out] char[] pvInfo, uint nLength, out uint lpnLengthNeeded);
     public const int UOI_NAME = 2;
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr GetThreadDesktop(uint dwThreadId);
     public const uint DESKTOP_READOBJECTS = 0x0001;
 
     // ---------------- timers ----------------

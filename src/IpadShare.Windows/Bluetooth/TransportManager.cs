@@ -24,6 +24,9 @@ internal sealed class TransportManager : IHidTransport
         _bridgePort = bridgePort;
     }
 
+    /// <summary>Use a simulated iPad instead of real hardware (--simulate-ipad).</summary>
+    public static bool Simulate { get; set; }
+
     public IHidTransport? Active => _active;
     public string Name => _active?.Name ?? "None";
     public TransportState State => _active?.State ?? TransportState.Stopped;
@@ -53,12 +56,16 @@ internal sealed class TransportManager : IHidTransport
         await _switchLock.WaitAsync(ct);
         try
         {
+            if (Simulate)
+            {
+                if (_active is not SimulatedTransport) await SwitchTo(new SimulatedTransport(), ct);
+                return;
+            }
             bool bridgePresent = !string.IsNullOrEmpty(_bridgePort) || BridgeTransport.FindBridgePorts().Count > 0;
             bool wantBridge = _preference == TransportPreference.UsbBridge
                               || (_preference == TransportPreference.Auto && bridgePresent);
             bool haveBridge = _active is BridgeTransport;
-            if (!force && _active != null && wantBridge == haveBridge && _active.State is not (TransportState.Error or TransportState.Stopped))
-                return;
+            if (!force && _active != null && wantBridge == haveBridge) return;   // same kind: retried by the monitor
 
             await SwitchTo(wantBridge ? new BridgeTransport(_bridgePort) : new BleHidPeripheral(), ct);
 
@@ -90,15 +97,24 @@ internal sealed class TransportManager : IHidTransport
 
     private async Task MonitorAsync(CancellationToken ct)
     {
+        var backoff = TimeSpan.FromSeconds(3);
+        var nextRetry = DateTime.UtcNow + backoff;
         while (!ct.IsCancellationRequested)
         {
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(3), ct);
-                if (_active?.State == TransportState.Connected) continue;
-                await SelectAsync(ct);
-                // Retry a transport that is merely unavailable (e.g. Bluetooth switched on again, bridge re-plugged)
-                if (_active?.State is TransportState.Unavailable or TransportState.Error)
+                var state = _active?.State;
+                if (state is TransportState.Connected or TransportState.Advertising)
+                {
+                    backoff = TimeSpan.FromSeconds(3);
+                    if (state == TransportState.Connected) continue;
+                }
+                await SelectAsync(ct);   // switches only if the bridge was plugged in or removed
+
+                // Retry a transport that is unavailable/failed (Bluetooth switched back on, driver restarted…)
+                // with exponential back-off so a PC without Bluetooth isn't hammered.
+                if (_active?.State is TransportState.Unavailable or TransportState.Error && DateTime.UtcNow >= nextRetry)
                 {
                     await _switchLock.WaitAsync(ct);
                     try
@@ -107,6 +123,8 @@ internal sealed class TransportManager : IHidTransport
                             await _active.StartAsync(ct);
                     }
                     finally { _switchLock.Release(); }
+                    backoff = TimeSpan.FromSeconds(Math.Min(60, backoff.TotalSeconds * 2));
+                    nextRetry = DateTime.UtcNow + backoff;
                 }
             }
             catch (OperationCanceledException) { break; }

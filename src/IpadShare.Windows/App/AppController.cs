@@ -51,6 +51,7 @@ internal sealed class AppController : IAsyncDisposable
     private int _hookX, _hookY, _prevHookX, _prevHookY;
     private int _parkX, _parkY;
     private double _lastRawMouse = double.NegativeInfinity;
+    private bool _rawMouseSeen, _touchSeen;      // Raw Input works on this machine
     private double _lastTouchTime = double.NegativeInfinity;
     private TouchFrame? _lastTouch;
     private readonly Dictionary<int, (double x, double y)> _prevContacts = new();
@@ -365,11 +366,10 @@ internal sealed class AppController : IAsyncDisposable
 
         // ---- iPad mode: everything is blocked ----
         if (!_forwardUserInput) return true;
-        bool rawActive = now - _lastRawMouse < 0.03 || now - _lastTouchTime < 0.03;
-        bool noRawSources = _input.Touchpads.Count == 0;
-        if (!rawActive && noRawSources)
+        if (!_rawMouseSeen && !_touchSeen)
         {
-            // Fallback (no Precision Touchpad access): forward what Windows would have done.
+            // Fallback only when Raw Input delivers nothing at all (e.g. some remote-desktop setups):
+            // forward what Windows would have done. Otherwise the same event would be counted twice.
             switch (e.Message)
             {
                 case WM_MOUSEMOVE:
@@ -416,12 +416,16 @@ internal sealed class AppController : IAsyncDisposable
     {
         if (e.Device == IntPtr.Zero || e.Absolute) return;   // synthesized or remote-desktop input
         _lastRawMouse = e.Time;
+        _rawMouseSeen = true;
         if (!_onIpad)
         {
             if (e.Dx != 0 || e.Dy != 0) PcPointer(e.Dx, e.Dy, e.Time);
             return;
         }
         if (!_forwardUserInput) return;
+        // Some touchpads also report through a legacy mouse interface: while fingers are on the pad,
+        // the gesture engine owns pointer input, so don't count the same motion twice.
+        if (_lastTouch != null && _lastTouch.ActiveCount > 0 && e.Time - _lastTouchTime < 0.05) return;
 
         ushort f = e.ButtonFlags;
         if ((f & RI_MOUSE_LEFT_BUTTON_DOWN) != 0) SetMouseButton(MouseButtons.Left, true);
@@ -472,6 +476,7 @@ internal sealed class AppController : IAsyncDisposable
         double now = frame.Time;
         _lastTouchTime = now;
         _lastTouch = frame;
+        _touchSeen = true;
 
         // single-finger motion (for edge pushes and the native-mode pointer estimate)
         double fdx = 0, fdy = 0;

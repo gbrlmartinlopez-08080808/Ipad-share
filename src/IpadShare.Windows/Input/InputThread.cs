@@ -53,6 +53,14 @@ internal sealed class InputThread : IDisposable
 
     public static double Now => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
 
+    /// <summary>IPADSHARE_TRACE_INPUT=1 logs the first input events (troubleshooting).</summary>
+    private static readonly bool s_trace = Environment.GetEnvironmentVariable("IPADSHARE_TRACE_INPUT") == "1";
+    private int _traced;
+    private void Trace(string what)
+    {
+        if (s_trace && _traced++ < 300) Log.Info("TRACE " + what);
+    }
+
     public void Start()
     {
         _thread = new Thread(Run) { IsBackground = true, Name = "iPadShare input", Priority = ThreadPriority.Highest };
@@ -202,6 +210,7 @@ internal sealed class InputThread : IDisposable
                 bool up = m == WM_KEYUP || m == WM_SYSKEYUP;
                 var ev = new KeyHookEvent(k.vkCode, k.scanCode, (k.flags & LLKHF_EXTENDED) != 0, up,
                                           (k.flags & LLKHF_INJECTED) != 0, k.dwExtraInfo);
+                Trace($"key {ev}");
                 if (OnKey?.Invoke(ev) == true) return new IntPtr(1);
             }
             catch (Exception ex) { Log.Error("Keyboard hook", ex); }
@@ -218,6 +227,7 @@ internal sealed class InputThread : IDisposable
                 HookEvents++;
                 var m = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
                 var ev = new MouseHookEvent((int)wParam, m.pt.X, m.pt.Y, m.mouseData, (m.flags & LLMHF_INJECTED) != 0, m.dwExtraInfo);
+                Trace($"mouse {ev}");
                 if (OnMouse?.Invoke(ev) == true) return new IntPtr(1);
             }
             catch (Exception ex) { Log.Error("Mouse hook", ex); }
@@ -287,7 +297,9 @@ internal sealed class InputThread : IDisposable
             short buttonData = Marshal.ReadInt16(body, 6);
             int dx = Marshal.ReadInt32(body, 12);
             int dy = Marshal.ReadInt32(body, 16);
-            OnRawMouse?.Invoke(new RawMouseEvent(header.hDevice, dx, dy, (flags & MOUSE_MOVE_ABSOLUTE) != 0, buttonFlags, buttonData, now));
+            var rm = new RawMouseEvent(header.hDevice, dx, dy, (flags & MOUSE_MOVE_ABSOLUTE) != 0, buttonFlags, buttonData, now);
+            Trace($"raw {rm}");
+            OnRawMouse?.Invoke(rm);
         }
         else if (header.dwType == RIM_TYPEHID)
         {

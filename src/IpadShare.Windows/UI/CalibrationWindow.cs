@@ -131,7 +131,7 @@ internal sealed class CalibrationWindow : Form
             if (curve != null)
             {
                 _app.SaveCalibration(curve);
-                _status.Text = "✓  Calibrated. Switching back to Windows is now precise.";
+                _status.Text = "Calibrated. Switching back to Windows is now precise.";
                 _status.ForeColor = Theme.Good;
                 _progress.Value = 1;
                 _done = true;

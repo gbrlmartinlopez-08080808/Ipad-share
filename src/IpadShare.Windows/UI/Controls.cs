@@ -512,3 +512,110 @@ internal sealed class StatusPill : DrawnControl
             TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
     }
 }
+
+internal enum CheckKind { Ok, Warn, Bad, Bullet, Pending }
+
+/// <summary>A line of text with a drawn status icon (no reliance on font glyphs like ✓).</summary>
+internal sealed class CheckLine : DrawnControl
+{
+    private CheckKind _kind;
+    private readonly int _maxWidth;
+
+    public CheckLine(CheckKind kind, string text, int maxWidth)
+    {
+        _kind = kind;
+        _maxWidth = maxWidth;
+        Text = text;
+        Margin = new Padding(0, 2, 0, 10);
+        Relayout();
+    }
+
+    public void Set(CheckKind kind, string text)
+    {
+        _kind = kind;
+        Text = text;
+        Relayout();
+        Invalidate();
+    }
+
+    private int Indent => (int)S(28);
+
+    private void Relayout()
+    {
+        var sz = TextRenderer.MeasureText(Text, Font, new Size(_maxWidth - Indent, int.MaxValue), TextFormatFlags.WordBreak);
+        Size = new Size(_maxWidth, Math.Max(sz.Height, (int)S(20)) + 2);
+    }
+
+    protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); Relayout(); }
+    protected override void OnDpiChangedAfterParent(EventArgs e) { base.OnDpiChangedAfterParent(e); Relayout(); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        Theme.Smooth(g);
+        float d = S(18), y = S(1);
+        var circle = new RectangleF(0, y, d, d);
+        Color c = _kind switch
+        {
+            CheckKind.Ok => Theme.Good,
+            CheckKind.Warn => Theme.Warn,
+            CheckKind.Bad => Theme.Bad,
+            CheckKind.Pending => Theme.SubText,
+            _ => Theme.SubText,
+        };
+        if (_kind == CheckKind.Bullet)
+        {
+            float b = S(6);
+            using var br = new SolidBrush(Theme.SubText);
+            g.FillEllipse(br, d / 2 - b / 2, y + d / 2 - b / 2, b, b);
+        }
+        else
+        {
+            using (var br = new SolidBrush(c)) g.FillEllipse(br, circle);
+            using var pen = new Pen(Color.White, S(2)) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+            float cx = d / 2, cy = y + d / 2;
+            switch (_kind)
+            {
+                case CheckKind.Ok:
+                    g.DrawLines(pen, new[] { new PointF(cx - S(4), cy), new PointF(cx - S(1), cy + S(3)), new PointF(cx + S(4.5f), cy - S(3.5f)) });
+                    break;
+                case CheckKind.Bad:
+                    g.DrawLine(pen, cx - S(3.5f), cy - S(3.5f), cx + S(3.5f), cy + S(3.5f));
+                    g.DrawLine(pen, cx + S(3.5f), cy - S(3.5f), cx - S(3.5f), cy + S(3.5f));
+                    break;
+                case CheckKind.Warn:
+                    g.DrawLine(pen, cx, cy - S(4), cx, cy + S(1));
+                    using (var dot = new SolidBrush(Color.White)) g.FillEllipse(dot, cx - S(1.2f), cy + S(3), S(2.4f), S(2.4f));
+                    break;
+                case CheckKind.Pending:
+                    using (var dot = new SolidBrush(Color.White))
+                        for (int i = -1; i <= 1; i++) g.FillEllipse(dot, cx + i * S(4) - S(1.2f), cy - S(1.2f), S(2.4f), S(2.4f));
+                    break;
+            }
+        }
+        TextRenderer.DrawText(g, Text, Font, new Rectangle(Indent, 0, Width - Indent, Height), ForeColor,
+            TextFormatFlags.WordBreak | TextFormatFlags.Left | TextFormatFlags.Top);
+    }
+}
+
+/// <summary>Page indicator dots.</summary>
+internal sealed class StepDots : DrawnControl
+{
+    private int _count, _index;
+    public void Set(int count, int index) { _count = count; _index = index; Invalidate(); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        Theme.Smooth(g);
+        float d = S(7), gap = S(8), y = (Height - d) / 2;
+        for (int i = 0; i < _count; i++)
+        {
+            float w = i == _index ? d * 2.6f : d;
+            float x = i * (d + gap) + (i > _index ? d * 1.6f : 0);
+            using var p = Theme.RoundRect(new RectangleF(x, y, w, d), d / 2);
+            using var b = new SolidBrush(i == _index ? Theme.Accent : Theme.Track);
+            g.FillPath(b, p);
+        }
+    }
+}
