@@ -28,7 +28,7 @@ $a = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {'arm64'} else {'x64'}; $d = "
 Or download `iPadShare-win-x64.exe` (`-win-arm64.exe` for Snapdragon laptops) from [Releases](../../releases) and double-click it.
 It's one self-contained file with nothing to install. If Windows SmartScreen warns (the file isn't code-signed), choose **More info › Run anyway**.
 
-3. The setup guide opens. It takes about a minute:
+The setup guide opens. It takes about a minute:
 
 | Step | What happens |
 | --- | --- |
