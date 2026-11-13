@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>iPad Share Calibration</title>
+<style>
+  :root {
+    --bg: #f2f2f7; --card: #ffffff; --text: #1c1c1e; --sub: #6e6e73; --accent: #0a84ff; --track: #e5e5ea; --good: #34c759; --bad: #ff3b30;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #000000; --card: #1c1c1e; --text: #f5f5f7; --sub: #98989d; --track: #2c2c2e; }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+    font: 17px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    touch-action: none; overscroll-behavior: none; -webkit-user-select: none; user-select: none;
+    -webkit-text-size-adjust: 100%;
+  }
+  main { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; }
+  .card {
+    width: min(560px, 100%); background: var(--card); border-radius: 22px; padding: 32px 32px 28px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.08); text-align: center;
+  }
+  .icon { width: 64px; height: 64px; margin: 0 auto 16px; border-radius: 15px;
+    background: linear-gradient(#409cff, #0a64eb); display: grid; place-items: center; }
+  h1 { font-size: 26px; margin: 0 0 8px; font-weight: 700; letter-spacing: -0.02em; }
+  p { margin: 0 0 22px; color: var(--sub); }
+  .bar { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
+  .fill { height: 100%; width: 0; background: var(--accent); border-radius: 4px; transition: width .25s ease; }
+  #status { margin-top: 14px; font-size: 15px; color: var(--sub); min-height: 1.4em; }
+  .done .fill { background: var(--good); }
+  .failed .fill { background: var(--bad); }
+  .hint { margin-top: 18px; font-size: 13px; color: var(--sub); }
+</style>
+</head>
+<body>
+<main>
+  <div class="card" id="card">
+    <div class="icon" aria-hidden="true">
+      <svg width="40" height="40" viewBox="0 0 64 64" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="19" width="24" height="17" rx="2.5"/><path d="M5 40h32"/>
+        <rect x="41" y="15" width="16" height="27" rx="3" fill="#fff"/><path d="M21 50h23m-4-3.5 4 3.5-4 3.5"/>
+      </svg>
+    </div>
+    <h1 id="title">Calibrating the pointer</h1>
+    <p id="lead">Keep this page open and don't touch your iPad or laptop. The pointer will move by itself for about 20 seconds.</p>
+    <div class="bar"><div class="fill" id="fill"></div></div>
+    <div id="status">Connecting to your laptop…</div>
+    <div class="hint">iPad Share measures how your iPad moves the pointer, so switching screens lands exactly where you expect.</div>
+  </div>
+</main>
+<script>
+(() => {
+  const k = new URLSearchParams(location.search).get("k") || "";
+  const $ = id => document.getElementById(id);
+  let ws, last = 0;
+
+  function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+  function viewport() { send({ t: "vp", vw: innerWidth, vh: innerHeight }); }
+
+  function connect() {
+    ws = new WebSocket(`ws://${location.host}/ws?k=${encodeURIComponent(k)}`);
+    ws.onopen = () => {
+      $("status").textContent = "Connected. Waiting for your laptop to start…";
+      send({ t: "hello", vw: innerWidth, vh: innerHeight, sw: screen.width, sh: screen.height,
+             dpr: devicePixelRatio, ua: navigator.userAgent });
+    };
+    ws.onmessage = ev => {
+      let d; try { d = JSON.parse(ev.data); } catch { return; }
+      if (d.t === "progress") {
+        $("fill").style.width = Math.round(d.v * 100) + "%";
+        $("status").textContent = d.msg || "";
+      } else if (d.t === "done") {
+        $("fill").style.width = "100%";
+        $("card").classList.add(d.ok ? "done" : "failed");
+        $("title").textContent = d.ok ? "All set" : "Calibration didn't finish";
+        $("lead").textContent = d.msg || "";
+        $("status").textContent = d.ok ? "You can close this tab." : "You can try again from the laptop.";
+      }
+    };
+    ws.onclose = () => { setTimeout(connect, 1500); };
+  }
+
+  const onMove = e => {
+    if (e.pointerType && e.pointerType !== "mouse") return;
+    send({ t: "p", x: e.clientX, y: e.clientY, ts: e.timeStamp });
+  };
+  addEventListener("pointermove", onMove, { passive: true });
+  if ("onpointerrawupdate" in window) addEventListener("pointerrawupdate", onMove, { passive: true });
+  addEventListener("resize", viewport);
+  addEventListener("orientationchange", () => setTimeout(viewport, 300));
+  document.addEventListener("touchmove", e => e.preventDefault(), { passive: false });
+  connect();
+})();
+</script>
+</body>
+</html>
