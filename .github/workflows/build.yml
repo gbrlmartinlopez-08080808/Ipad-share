@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Publish a release with this tag (e.g. v0.1.0). Leave empty to only build."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -75,7 +80,7 @@ jobs:
 
   release:
     name: Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     needs: [windows, firmware]
     runs-on: ubuntu-latest
     steps:
@@ -85,7 +90,9 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          name: iPad Share ${{ github.ref_name }}
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: iPad Share ${{ inputs.release_tag || github.ref_name }}
           files: dist/*
           make_latest: true
           body: |
