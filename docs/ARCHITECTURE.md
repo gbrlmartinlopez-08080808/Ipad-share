@@ -413,8 +413,16 @@ done by the iPad (Windows repeat events are ignored), like a real keyboard.
 
 | Part | Verified by |
 | --- | --- |
-| HID descriptor validity and report sizes | Unit tests (descriptor parser) |
-| Report encoding, key translation, gesture engine, edge router, cursor model, calibration fit, scheduler, bridge framing | Unit tests |
-| Builds into a self-contained Windows `.exe` (x64 + ARM64) | CI and local cross-build |
-| Windows hooks, Raw Input, touchpad parsing, WinRT Bluetooth, UI | **Needs your laptop**. Written defensively, with every subsystem failing soft and logging to Diagnostics. |
-| iPadOS acceptance of the trackpad collection, Globe key, scroll multiplier | **Needs your iPad**. Designed so each one degrades gracefully if the iPad says no. |
+| HID descriptor validity and report sizes | Unit tests (independent descriptor parser, bit-level field checks) |
+| Report encoding, key translation, gesture engine, edge router, cursor model, calibration fit, scheduler, bridge framing | Unit tests (128) |
+| Firmware ↔ app agreement | Tests compare the firmware's report map byte-for-byte and a gcc-compiled frame against the C# encoder |
+| Builds into a self-contained Windows `.exe` (x64 + ARM64), firmware image | CI (GitHub Actions on Windows) and local cross-build |
+| Real `.exe` end-to-end on Windows APIs: hooks, Raw Input, edge push → crossing, entry snap, typing (⇧, Ctrl→⌘, Home→⌘←), click, scroll, push-back return, Ctrl+Alt+Space, cursor parking, setup guide and settings UI | Automated run under Wine with `--simulate-ipad` and synthetic input (xdotool) |
+| WinRT Bluetooth peripheral, Precision Touchpad parsing on real hardware | **Needs your laptop.** Written defensively. Every subsystem fails soft and reports in Diagnostics. |
+| iPadOS acceptance of the trackpad collection, Globe key, scroll multiplier, real acceleration curve | **Needs your iPad.** Each one degrades gracefully if the iPad says no, and the setup guide tests the trackpad mode. |
+
+### Testing without an iPad
+
+`iPadShare.exe --simulate-ipad` behaves as if an iPad were connected and logs every report it would
+send (`%LOCALAPPDATA%\iPadShare\logs\ipadshare.log`). Set `IPADSHARE_TRACE_INPUT=1` to also log the
+raw hook and Raw Input events.
