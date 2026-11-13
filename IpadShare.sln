@@ -1,0 +1,36 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{407559EC-3CD5-4607-B112-0C363A3BD392}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IpadShare.Core", "src\IpadShare.Core\IpadShare.Core.csproj", "{3457E360-F830-4027-90AF-F3D817CC2C2A}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{9FF4F035-4357-43AF-9D23-37DDD3ED9113}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IpadShare.Core.Tests", "tests\IpadShare.Core.Tests\IpadShare.Core.Tests.csproj", "{62B63B00-FABE-4E04-88F6-129625501AE8}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{3457E360-F830-4027-90AF-F3D817CC2C2A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3457E360-F830-4027-90AF-F3D817CC2C2A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3457E360-F830-4027-90AF-F3D817CC2C2A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3457E360-F830-4027-90AF-F3D817CC2C2A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{62B63B00-FABE-4E04-88F6-129625501AE8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{62B63B00-FABE-4E04-88F6-129625501AE8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{62B63B00-FABE-4E04-88F6-129625501AE8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{62B63B00-FABE-4E04-88F6-129625501AE8}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{3457E360-F830-4027-90AF-F3D817CC2C2A} = {407559EC-3CD5-4607-B112-0C363A3BD392}
+		{62B63B00-FABE-4E04-88F6-129625501AE8} = {9FF4F035-4357-43AF-9D23-37DDD3ED9113}
+	EndGlobalSection
+EndGlobal
