@@ -18,10 +18,16 @@ Move the pointer past the edge of your screen and it continues onto the iPad; yo
 
 ## Get it
 
-1. Download **`iPadShare-win-x64.exe`** (or `-win-arm64.exe` for Snapdragon laptops) from the latest
-   [GitHub Actions run](../../actions/workflows/build.yml) (scroll to *Artifacts*) or from [Releases](../../releases).
-2. Run it. It's one self-contained file. Nothing else to install.
-   Windows SmartScreen may warn because the file isn't code-signed: choose **More info › Run anyway**.
+Paste this into **PowerShell** (Start menu › type *PowerShell* › Enter). It downloads the latest version
+into `%USERPROFILE%\iPadShare` and starts it. Run the same line again any time to update.
+
+```powershell
+$a = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {'arm64'} else {'x64'}; $d = "$HOME\iPadShare"; mkdir $d -Force | Out-Null; curl.exe -fL -o "$d\iPadShare.exe" "https://github.com/gbrlmartinlopez-08080808/Ipad-share/releases/latest/download/iPadShare-win-$a.exe"; Unblock-File "$d\iPadShare.exe"; & "$d\iPadShare.exe"
+```
+
+Or download `iPadShare-win-x64.exe` (`-win-arm64.exe` for Snapdragon laptops) from [Releases](../../releases) and double-click it.
+It's one self-contained file with nothing to install. If Windows SmartScreen warns (the file isn't code-signed), choose **More info › Run anyway**.
+
 3. The setup guide opens. It takes about a minute:
 
 | Step | What happens |

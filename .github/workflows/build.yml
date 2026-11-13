@@ -85,5 +85,13 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          name: iPad Share ${{ github.ref_name }}
           files: dist/*
+          make_latest: true
+          body: |
+            **Install / update (PowerShell, one line):**
+            ```powershell
+            $a = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {'arm64'} else {'x64'}; $d = "$HOME\iPadShare"; mkdir $d -Force | Out-Null; curl.exe -fL -o "$d\iPadShare.exe" "https://github.com/${{ github.repository }}/releases/latest/download/iPadShare-win-$a.exe"; Unblock-File "$d\iPadShare.exe"; & "$d\iPadShare.exe"
+            ```
+            Files: `iPadShare-win-x64.exe` (most laptops), `iPadShare-win-arm64.exe` (Snapdragon), `ipadshare-bridge-esp32s3.bin` (optional USB bridge firmware).
           generate_release_notes: true
