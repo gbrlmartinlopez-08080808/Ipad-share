@@ -367,6 +367,20 @@ internal sealed class AppController : IAsyncDisposable
         }
 
         // ---- iPad mode: everything is blocked ----
+        // ...except the release of a button that went down on Windows (e.g. hotkey pressed mid-drag),
+        // so Windows never keeps a stuck button.
+        var released = e.Message switch
+        {
+            WM_LBUTTONUP => MouseButtons.Left,
+            WM_RBUTTONUP => MouseButtons.Right,
+            WM_MBUTTONUP => MouseButtons.Middle,
+            _ => MouseButtons.None,
+        };
+        if (released != MouseButtons.None && (_pcButtons & released) != 0)
+        {
+            _pcButtons &= ~released;
+            return false;
+        }
         if (!_forwardUserInput) return true;
         if (!_rawMouseSeen && !_touchSeen)
         {
