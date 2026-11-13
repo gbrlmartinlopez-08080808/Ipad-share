@@ -70,8 +70,8 @@ internal sealed class CalibrationWindow : Form
             _url.Text = _server.Url;
             _qr.Image = RenderQr(_server.Url!);
             _runner = new CalibrationRunner(_app.CreateCalibrationHost(), _server);
-            _runner.Progress += (msg, v) => BeginInvoke(() => { _status.Text = msg; _progress.Value = v; });
-            _server.ClientChanged += () => BeginInvoke(UpdateWaiting);
+            _runner.Progress += (msg, v) => Ui(() => { _status.Text = msg; _progress.Value = v; });
+            _server.ClientChanged += () => Ui(UpdateWaiting);
             _app.CancelRequested += OnCancelRequested;
             UpdateWaiting();
         }
@@ -85,6 +85,13 @@ internal sealed class CalibrationWindow : Form
     }
 
     private void OnCancelRequested() => _cts?.Cancel();
+
+    /// <summary>Marshal to the UI thread, ignoring calls that arrive after the window closed.</summary>
+    private void Ui(Action a)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        try { BeginInvoke(a); } catch (InvalidOperationException) { }   // includes ObjectDisposedException
+    }
 
     private async void UpdateWaiting()
     {

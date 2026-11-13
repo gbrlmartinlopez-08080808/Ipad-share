@@ -1,0 +1,89 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet test tests/IpadShare.Core.Tests -c Release --logger "console;verbosity=normal"
+
+  windows:
+    name: Windows app (${{ matrix.rid }})
+    needs: test
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        rid: [win-x64, win-arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Publish single-file exe
+        run: >
+          dotnet publish src/IpadShare.Windows -c Release -r ${{ matrix.rid }}
+          --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true -p:DebugType=none -o publish/${{ matrix.rid }}
+      - name: Rename
+        shell: pwsh
+        run: Rename-Item publish/${{ matrix.rid }}/iPadShare.exe "iPadShare-${{ matrix.rid }}.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iPadShare-${{ matrix.rid }}
+          path: publish/${{ matrix.rid }}/iPadShare-${{ matrix.rid }}.exe
+          if-no-files-found: error
+
+  firmware:
+    name: ESP32-S3 bridge firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('firmware/esp32-bridge/platformio.ini') }}
+      - run: pip install platformio esptool
+      - run: pio run -d firmware/esp32-bridge
+      - name: Merge into one image (flash at 0x0 from a browser)
+        run: |
+          B=firmware/esp32-bridge/.pio/build/esp32s3
+          APP0=$(find ~/.platformio/packages/framework-arduinoespressif32 -name boot_app0.bin | head -1)
+          python -m esptool --chip esp32s3 merge_bin -o ipadshare-bridge-esp32s3.bin \
+            0x0 $B/bootloader.bin 0x8000 $B/partitions.bin 0xe000 "$APP0" 0x10000 $B/firmware.bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipadshare-bridge-esp32s3
+          path: ipadshare-bridge-esp32s3.bin
+          if-no-files-found: error
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, firmware]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

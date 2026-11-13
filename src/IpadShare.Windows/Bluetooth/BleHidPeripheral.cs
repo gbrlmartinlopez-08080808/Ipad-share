@@ -29,7 +29,8 @@ internal sealed class BleHidPeripheral : IHidTransport
 
     private readonly object _gate = new();
     private GattServiceProvider? _hid, _battery;
-    private readonly Dictionary<byte, GattLocalCharacteristic> _inputs = new();
+    // Replaced atomically on (re)publish: the scheduler thread reads it while Bluetooth restarts.
+    private volatile Dictionary<byte, GattLocalCharacteristic> _inputs = new();
     private readonly Dictionary<byte, byte[]> _features = new();
     private readonly Dictionary<byte, byte[]> _lastInput = new();
     private GattLocalCharacteristic? _batteryLevel;
@@ -141,6 +142,7 @@ internal sealed class BleHidPeripheral : IHidTransport
         if (r.Error != BluetoothError.Success) throw new InvalidOperationException($"HID service: {r.Error}");
         _hid = r.ServiceProvider;
         var svc = _hid.Service;
+        var inputs = new Dictionary<byte, GattLocalCharacteristic>();
 
         await AddStatic(svc, HidInformationUuid, ReportMap.HidInformation);
         await AddStatic(svc, ReportMapUuid, ReportMap.DescriptorCopy());
@@ -176,7 +178,7 @@ internal sealed class BleHidPeripheral : IHidTransport
                 ch.ReadRequested += (s, a) => Respond(a, LastInput(id, len));
                 ch.SubscribedClientsChanged += OnSubscribedClientsChanged;
                 await AddReportReference(ch, id, HidReportType.Input);
-                _inputs[id] = ch;
+                inputs[id] = ch;
             }
             else if (info.Type == HidReportType.Feature)
             {
@@ -220,6 +222,7 @@ internal sealed class BleHidPeripheral : IHidTransport
         }
         catch (Exception ex) { Log.Warn("Battery service unavailable: " + ex.Message); _battery = null; }
 
+        _inputs = inputs;
         _hid.AdvertisementStatusChanged += OnAdvertisementStatusChanged;
         _hid.StartAdvertising(new GattServiceProviderAdvertisingParameters { IsConnectable = true, IsDiscoverable = true });
         _battery?.StartAdvertising(new GattServiceProviderAdvertisingParameters { IsConnectable = true, IsDiscoverable = false });
@@ -446,7 +449,7 @@ internal sealed class BleHidPeripheral : IHidTransport
         }
         catch (Exception ex) { Log.Warn("Stop advertising: " + ex.Message); }
         foreach (var ch in _inputs.Values) ch.SubscribedClientsChanged -= OnSubscribedClientsChanged;
-        _inputs.Clear();
+        _inputs = new Dictionary<byte, GattLocalCharacteristic>();
         _hid = null;
         _battery = null;
         _batteryLevel = null;

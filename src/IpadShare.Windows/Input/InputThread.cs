@@ -35,6 +35,7 @@ internal sealed class InputThread : IDisposable
     private volatile bool _stop;
     private bool _timerPeriod;
     private readonly List<PrecisionTouchpad> _touchpads = new();
+    private volatile PrecisionTouchpad[] _touchpadSnapshot = Array.Empty<PrecisionTouchpad>();
 
     public Func<KeyHookEvent, bool>? OnKey;
     public Func<MouseHookEvent, bool>? OnMouse;
@@ -47,7 +48,8 @@ internal sealed class InputThread : IDisposable
     public long HookEvents;
     public long RawEvents;
     public bool HooksInstalled => _kbHook != IntPtr.Zero && _mouseHook != IntPtr.Zero;
-    public IReadOnlyList<PrecisionTouchpad> Touchpads => _touchpads;
+    /// <summary>Immutable snapshot, safe to read from any thread.</summary>
+    public IReadOnlyList<PrecisionTouchpad> Touchpads => _touchpadSnapshot;
     public string? TouchpadError { get; private set; }
     public IntPtr Window => _hwnd;
 
@@ -254,13 +256,16 @@ internal sealed class InputThread : IDisposable
 
     private void EnumerateTouchpads()
     {
-        foreach (var t in _touchpads) t.Dispose();
+        var old = _touchpads.ToArray();
         _touchpads.Clear();
+        _touchpadSnapshot = Array.Empty<PrecisionTouchpad>();
+        foreach (var t in old) t.Dispose();
         try
         {
             _touchpads.AddRange(PrecisionTouchpad.Enumerate(m => Log.Info(m)));
             foreach (var t in _touchpads) Log.Info("Touchpad: " + t.Describe());
             if (_touchpads.Count == 0) Log.Info("No Precision Touchpad found");
+            _touchpadSnapshot = _touchpads.ToArray();
         }
         catch (Exception ex)
         {
@@ -335,6 +340,7 @@ internal sealed class InputThread : IDisposable
             if (_mouseHook != IntPtr.Zero) UnhookWindowsHookEx(_mouseHook);
             _kbHook = _mouseHook = IntPtr.Zero;
             SetHighResolutionTimer(false);
+            _touchpadSnapshot = Array.Empty<PrecisionTouchpad>();
             foreach (var t in _touchpads) t.Dispose();
             _touchpads.Clear();
             if (_hwnd != IntPtr.Zero) DestroyWindow(_hwnd);
