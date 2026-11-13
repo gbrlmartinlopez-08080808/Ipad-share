@@ -224,4 +224,23 @@ public class KeyboardTests
         Assert.False(_out[^1].Contains(Keys.A));
         Assert.True(_out[^1].Contains(Keys.G));
     }
+
+    [Fact]
+    public void Win_shift_s_is_screenshot_and_markup_not_search()
+    {
+        var t = T();
+        t.KeyDown(Keys.LeftGui, _out);
+        t.KeyDown(Keys.LeftShift, _out);
+        t.KeyDown(Keys.S, _out);
+        Assert.Equal(R(Mods.Cmd | Mods.LShift, Keys.D4), _out[^1]);
+    }
+
+    [Fact]
+    public void Win_s_is_spotlight()
+    {
+        var t = T();
+        t.KeyDown(Keys.LeftGui, _out);
+        t.KeyDown(Keys.S, _out);
+        Assert.Equal(R(Mods.Cmd, Keys.Space), _out[^1]);
+    }
 }

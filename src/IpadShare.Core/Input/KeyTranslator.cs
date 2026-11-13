@@ -231,6 +231,7 @@ public sealed class KeyTranslator
         // ---- Win (system) shortcuts ----
         if (win && !ctrl && !alt)
         {
+            if (shift && key == Keys.S) return new Chord(Mods.Cmd | Mods.LShift, Keys.D4); // Snip → screenshot+markup
             switch (key)
             {
                 case Keys.D: return new Chord(Mods.Cmd, Keys.H);                       // show desktop → Home
@@ -240,7 +241,6 @@ public sealed class KeyTranslator
                 case 0x6E /* F23: Copilot key (Win+Shift+F23) */: return new Chord(Mods.Cmd, Keys.Space);
                 case Keys.D3 when shift: return new Chord(Mods.Cmd | Mods.LShift, Keys.D3);
             }
-            if (shift && key == Keys.S) return new Chord(Mods.Cmd | Mods.LShift, Keys.D4); // Snip → screenshot+markup
             return new Chord(Mods.Globe | sh, key);                                   // Win+X → 🌐X
         }
 

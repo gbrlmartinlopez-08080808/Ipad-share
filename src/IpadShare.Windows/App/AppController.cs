@@ -288,14 +288,16 @@ internal sealed class AppController : IAsyncDisposable
 
         // ---- iPad mode ----
         if (e.Up && _pcKeysDown.Remove(e.Vk)) return false;      // a key pressed on Windows releases on Windows
-        if (e.Injected && !ours) return true;                     // drop other software's synthetic keys (e.g. gesture shortcuts)
+        var map = ScanCodeMap.Map((int)e.ScanCode, e.Extended, (int)e.Vk);
+        // Drop other software's synthetic keys (e.g. touchpad-gesture shortcuts like Win+Tab), but keep
+        // media keys: laptop hotkey utilities often inject volume/play keys.
+        if (e.Injected && !ours && map.Kind != KeyMapKind.Consumer) return true;
         if (!_forwardUserInput)
         {
             if (!e.Up && e.Vk == 0x1B) CancelRequested?.Invoke();   // Esc cancels calibration
             return true;
         }
 
-        var map = ScanCodeMap.Map((int)e.ScanCode, e.Extended, (int)e.Vk);
         switch (map.Kind)
         {
             case KeyMapKind.Keyboard:
