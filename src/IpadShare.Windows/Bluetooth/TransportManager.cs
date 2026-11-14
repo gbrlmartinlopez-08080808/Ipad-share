@@ -33,6 +33,7 @@ internal sealed class TransportManager : IHidTransport
     public string? StatusDetail => _active?.StatusDetail;
     public string? PeerName => _active?.PeerName;
     public int MaxReportPayload => _active?.MaxReportPayload ?? 20;
+    public double? ConnectionIntervalMs => _active?.ConnectionIntervalMs;
 
     public event EventHandler? StateChanged;
     public event EventHandler<HostReportWrite>? HostWrite;

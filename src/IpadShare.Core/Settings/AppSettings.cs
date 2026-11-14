@@ -50,7 +50,8 @@ public sealed class CalibrationData
 /// <summary>All user settings, persisted as JSON in %APPDATA%\iPadShare\settings.json.</summary>
 public sealed class AppSettings
 {
-    public int SchemaVersion { get; set; } = 1;
+    public const int CurrentSchema = 2;
+    public int SchemaVersion { get; set; } = CurrentSchema;
     public bool FirstRunCompleted { get; set; }
 
     // Connection
@@ -61,8 +62,10 @@ public sealed class AppSettings
     public bool SharingEnabled { get; set; } = true;
     public bool StartWithWindows { get; set; } = true;
     public bool ShowEdgeGlow { get; set; } = true;
-    public CrossingResistance Resistance { get; set; } = CrossingResistance.Medium;
+    public CrossingResistance Resistance { get; set; } = CrossingResistance.Low;
     public bool HotkeyEnabled { get; set; } = true;   // Ctrl+Alt+Space
+    /// <summary>Shake the pointer left-right to jump to the other device.</summary>
+    public bool ShakeToSwitch { get; set; } = true;
 
     public ArrangementSettings Arrangement { get; set; } = new();
 
@@ -111,9 +114,9 @@ public sealed class AppSettings
 
     public double PushThreshold => Resistance switch
     {
-        CrossingResistance.Low => 25,
-        CrossingResistance.High => 140,
-        _ => 60,
+        CrossingResistance.Low => 15,
+        CrossingResistance.High => 100,
+        _ => 40,
     };
 
     public static readonly JsonSerializerOptions JsonOptions = new()
@@ -137,6 +140,15 @@ public sealed class AppSettings
     /// <summary>Clamp values and fill anything missing (old or hand-edited files).</summary>
     public void Normalize()
     {
+        if (SchemaVersion < 2)
+        {
+            // 0.1.x → 0.2: crossing should feel effortless, shake-to-switch on, and the experimental
+            // iPad-native trackpad mode only stays on if it was confirmed to work.
+            Resistance = CrossingResistance.Low;
+            ShakeToSwitch = true;
+            if (TrackpadMode == TrackpadMode.Native && !NativeModeVerified) TrackpadMode = TrackpadMode.Translated;
+            SchemaVersion = 2;
+        }
         PointerSpeed = Clamp(PointerSpeed, 0.25, 3, 1);
         ScrollSpeed = Clamp(ScrollSpeed, 0.25, 3, 1);
         MouseSpeed = Clamp(MouseSpeed, 0.25, 3, 1);

@@ -25,8 +25,11 @@ public sealed class IpadCursorModel
     public GainCurve MouseCurve { get; set; }
     public GainCurve TouchCurve { get; set; }
     public PointD Position { get; private set; }
-    /// <summary>Overshoot older than this (s) without further pushing is forgotten.</summary>
-    public double PushMemory { get; set; } = 0.30;
+    /// <summary>
+    /// Overshoot older than this (s) without further pushing is forgotten. Long enough to lift and
+    /// re-place a finger on the trackpad between swipes.
+    /// </summary>
+    public double PushMemory { get; set; } = 1.2;
 
     public void Place(PointD p)
     {

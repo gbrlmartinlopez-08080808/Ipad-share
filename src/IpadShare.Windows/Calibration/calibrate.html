@@ -71,7 +71,7 @@
     ws.onmessage = ev => {
       let d; try { d = JSON.parse(ev.data); } catch { return; }
       if (d.t === "progress") {
-        $("fill").style.width = Math.round(d.v * 100) + "%";
+        if (d.v >= 0) $("fill").style.width = Math.round(d.v * 100) + "%";
         $("status").textContent = d.msg || "";
       } else if (d.t === "done") {
         $("fill").style.width = "100%";

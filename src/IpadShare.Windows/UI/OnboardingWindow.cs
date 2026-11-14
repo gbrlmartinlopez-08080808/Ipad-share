@@ -43,7 +43,7 @@ internal sealed class OnboardingWindow : Form
         ForeColor = Theme.Text;
         Font = Theme.Body();
 
-        _pages = new() { Welcome, Pair, Arrange, TryIt, Gestures, Done };
+        _pages = new() { Welcome, Pair, Arrange, TryIt, Done };
 
         _host.SetBounds(30, 24, W, 450);
         _host.BackColor = Theme.Background;
@@ -207,8 +207,8 @@ internal sealed class OnboardingWindow : Form
         var s = Stack();
         s.Controls.Add(H1("Try it"));
         string side = _app.Settings.Arrangement.Side.ToString().ToLowerInvariant();
-        s.Controls.Add(P($"Move the pointer to the {side} edge of your screen and keep pushing a little. A blue glow builds up, then the pointer appears on your iPad."));
-        s.Controls.Add(P("To come back, move the pointer back past the same edge of the iPad. Ctrl+Alt+Space also switches."));
+        s.Controls.Add(P($"Move the pointer to the {side} edge of your screen. It continues onto your iPad."));
+        s.Controls.Add(P("To come back, move it back past the same edge of the iPad. You can also shake the pointer left-right quickly, or press Ctrl+Alt+Space, to jump between the two at any time."));
         _tryLabel = new CheckLine(CheckKind.Pending, "Waiting for you to cross the edge…", W - 24) { Margin = new Padding(0, 10, 0, 0) };
         s.Controls.Add(_tryLabel);
         _wasOnIpad = _app.Status.OnIpad;
@@ -216,64 +216,13 @@ internal sealed class OnboardingWindow : Form
         return s;
     }
 
-    private Control Gestures()
-    {
-        var s = Stack();
-        s.Controls.Add(H1("iPad gestures"));
-        var st = _app.Status;
-        bool possible = st.TouchpadFound && (st.Transport != TransportState.Connected || st.MaxPayload >= 29);
-        if (!possible)
-        {
-            s.Controls.Add(P("Your trackpad gestures will be translated into iPad shortcuts: three-finger swipe up for Home, " +
-                             "up and hold for the App Switcher, sideways to switch apps."));
-            return s;
-        }
-        s.Controls.Add(P("Your laptop can also pass your fingers straight to iPadOS, for the real iPad trackpad feel. " +
-                         "It depends on the iPad accepting it, so let's test it:"));
-        var test = new PillButton { Text = "Test iPad-native gestures", Primary = true, Margin = new Padding(0, 4, 0, 12) };
-        test.FitToText();
-        var question = P("Move onto the iPad, then swipe up with three fingers. Did it go to the Home Screen?", sub: false);
-        question.Visible = false;
-        var answers = new FlowLayoutPanel { AutoSize = true, Visible = false, BackColor = Theme.Background };
-        var yes = new PillButton { Text = "Yes, keep them", Primary = true, Margin = new Padding(0, 0, 8, 0) };
-        var no = new PillButton { Text = "No, use translated" };
-        yes.FitToText(); no.FitToText();
-        answers.Controls.Add(yes); answers.Controls.Add(no);
-        var result = new CheckLine(CheckKind.Ok, "", W - 24) { Visible = false };
-        test.Click += (_, _) =>
-        {
-            _app.UpdateSettings(x => x.TrackpadMode = TrackpadMode.Native);
-            question.Visible = answers.Visible = true;
-        };
-        yes.Click += (_, _) =>
-        {
-            _app.UpdateSettings(x => { x.TrackpadMode = TrackpadMode.Native; x.NativeModeVerified = true; });
-            result.Set(CheckKind.Ok, "iPad-native gestures are on.");
-            result.Visible = true;
-            answers.Visible = false;
-        };
-        no.Click += (_, _) =>
-        {
-            _app.UpdateSettings(x => { x.TrackpadMode = TrackpadMode.Translated; x.NativeModeVerified = false; });
-            result.Set(CheckKind.Ok, "Using translated gestures. They work on every iPad.");
-            result.Visible = true;
-            answers.Visible = false;
-        };
-        s.Controls.Add(test);
-        s.Controls.Add(question);
-        s.Controls.Add(answers);
-        s.Controls.Add(result);
-        s.Controls.Add(P("You can change this any time under Trackpad › Gestures."));
-        return s;
-    }
-
     private Control Done()
     {
         var s = Stack();
         s.Controls.Add(H1("You're all set"));
-        s.Controls.Add(new CheckLine(CheckKind.Bullet, "Ctrl+Alt+Space jumps between your laptop and the iPad.", W - 24));
+        s.Controls.Add(new CheckLine(CheckKind.Bullet, "Shake the pointer, or press Ctrl+Alt+Space, to jump between your laptop and the iPad.", W - 24));
         s.Controls.Add(new CheckLine(CheckKind.Bullet, "Set the iPad's keyboard layout to match your laptop: on the iPad, Settings › General › Keyboard › Hardware Keyboard.", W - 24));
-        s.Controls.Add(new CheckLine(CheckKind.Bullet, "For the most precise handoff, run Calibrate under Switching (20 seconds in Safari, nothing to install).", W - 24));
+        s.Controls.Add(new CheckLine(CheckKind.Bullet, "Recommended: calibrate once (20 seconds in Safari, nothing to install). Pointer speed and the return to Windows become exact for your iPad.", W - 24));
         s.Controls.Add(new CheckLine(CheckKind.Bullet, "iPad Share lives in the tray (^) and starts with Windows, so your iPad reconnects by itself.", W - 24));
         var cal = new PillButton { Text = "Calibrate now", Margin = new Padding(0, 8, 0, 0) };
         cal.FitToText();

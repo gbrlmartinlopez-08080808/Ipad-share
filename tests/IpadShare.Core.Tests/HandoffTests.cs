@@ -32,9 +32,18 @@ public class HandoffTests
     }
 
     [Fact]
-    public void Crossing_requires_a_deliberate_push()
+    public void Default_crossing_is_light_just_go_past_the_edge()
     {
         var c = Controller(RightLayout());
+        double t = 0;
+        Assert.Null(c.OnPcPointer(1919, 600, 8, 0, t, false));
+        Assert.NotNull(c.OnPcPointer(1919, 600, 8, 0, t + 0.008, false));
+    }
+
+    [Fact]
+    public void Crossing_requires_a_deliberate_push()
+    {
+        var c = Controller(RightLayout(), new HandoffSettings { PushThreshold = 60 });
         double t = 0;
         // Reaching the edge alone doesn't cross.
         Assert.Null(c.OnPcPointer(1919, 600, 10, 0, t, false));
@@ -48,9 +57,9 @@ public class HandoffTests
     [Fact]
     public void Push_resets_after_a_pause_and_off_edge()
     {
-        var c = Controller(RightLayout());
+        var c = Controller(RightLayout(), new HandoffSettings { PushThreshold = 60 });
         c.OnPcPointer(1919, 600, 50, 0, 0, false);
-        Assert.Null(c.OnPcPointer(1919, 600, 20, 0, 0.5, false));   // paused too long: starts again
+        Assert.Null(c.OnPcPointer(1919, 600, 20, 0, 1.0, false));   // paused too long: starts again
         Assert.InRange(c.PushProgress, 0.2, 0.5);
         c.OnPcPointer(1800, 600, 20, 0, 0.51, false);                // left the edge
         Assert.Equal(0, c.PushProgress);
@@ -82,12 +91,12 @@ public class HandoffTests
         var l = RightLayout();
         var c = Controller(l);
         var plan = c.Enter(l.IpadStart + l.IpadLengthPx * 0.25, 0);
-        Assert.True(plan.Moves.Take(4).All(m => m.dx <= -3000 && m.dy == 0));
+        Assert.True(plan.Moves.Take(2).All(m => m.dx <= -6000 && m.dy == 0));
         Assert.Equal(0, plan.IpadPosition.X, 6);
         Assert.Equal(820 * 0.25, plan.IpadPosition.Y, 1);
-        // Remaining moves go up (model started centred at 410)
-        Assert.True(plan.Moves.Skip(4).Sum(m => m.dy) < 0);
-        Assert.All(plan.Moves.Skip(4), m => Assert.InRange(Math.Abs(m.dy), 0, 40));
+        // Remaining moves go up (model started centred at 410), as a short burst
+        Assert.True(plan.Moves.Skip(2).Sum(m => m.dy) < 0);
+        Assert.InRange(plan.Moves.Count, 3, 8);
     }
 
     [Fact]
@@ -97,17 +106,41 @@ public class HandoffTests
         var c = Controller(l);
         c.Enter(600, 0);
         double t = 1.0;
-        // Move right into the iPad, then back left to the edge.
-        for (int i = 0; i < 30; i++) Assert.Null(c.OnIpadMouse(20, 0, t += 0.01, false));
-        for (int i = 0; i < 33; i++) Assert.Null(c.OnIpadMouse(-20, 0, t += 0.01, false));
-        Assert.Equal(0, c.Model.Position.X, 6);     // pinned at the shared edge, not yet returned
-        Assert.True(c.OnIpad);
+        // Move right into the iPad, then back left.
+        for (int i = 0; i < 30; i++) Assert.Null(c.OnIpadMouse(20, 0, t += 0.015, false));
         PointD? back = null;
-        for (int i = 0; i < 100 && back == null; i++) back = c.OnIpadMouse(-20, 0, t += 0.01, false);
+        bool reachedEdge = false;
+        for (int i = 0; i < 200 && back == null; i++)
+        {
+            bool atEdgeBefore = c.Model.Position.X <= 0;
+            back = c.OnIpadMouse(-20, 0, t += 0.015, false);
+            if (back != null) Assert.True(atEdgeBefore || reachedEdge, "returned before reaching the edge");
+            reachedEdge |= c.Model.Position.X <= 0;
+        }
         Assert.NotNull(back);
         Assert.False(c.OnIpad);
         Assert.Equal(1918, back!.Value.X, 6);
         Assert.Equal(600, back.Value.Y, 2);
+    }
+
+    [Fact]
+    public void Return_works_with_trackpad_swipes_and_finger_lifts()
+    {
+        // Several short leftward swipes with ~0.4 s finger-lift pauses in between.
+        var c = Controller(RightLayout());
+        c.Enter(600, 0);
+        c.Model.Place(new PointD(300, 400));
+        double t = 1.0;
+        PointD? back = null;
+        int swipes = 0;
+        while (back == null && swipes < 12)
+        {
+            swipes++;
+            for (int i = 0; i < 10 && back == null; i++) back = c.OnIpadMouse(-25, 0, t += 0.015, false);
+            t += 0.4; // lift and re-place the finger
+        }
+        Assert.NotNull(back);
+        Assert.InRange(swipes, 1, 6);
     }
 
     [Fact]
@@ -130,9 +163,11 @@ public class HandoffTests
         Assert.Equal(20, m.Overshoot(EdgeSide.Left), 6);
         m.ApplyMouse(-5, 0, 0.02);
         Assert.Equal(25, m.Overshoot(EdgeSide.Left), 6);
-        m.ApplyMouse(-1, 0, 1.0);                     // long pause: old push forgotten
+        m.ApplyMouse(-1, 0, 0.5);                     // short pause (finger lift): push remembered
+        Assert.Equal(26, m.Overshoot(EdgeSide.Left), 6);
+        m.ApplyMouse(-1, 0, 3.0);                     // long pause: old push forgotten
         Assert.Equal(1, m.Overshoot(EdgeSide.Left), 6);
-        m.ApplyMouse(10, 0, 1.01);                    // moving away cancels
+        m.ApplyMouse(10, 0, 3.01);                    // moving away cancels
         Assert.Equal(0, m.Overshoot(EdgeSide.Left), 6);
     }
 
@@ -220,5 +255,29 @@ public class HandoffTests
         c.Model.Place(new PointD(0, 800));  // pointer near the iPad bottom (faces nothing)
         var p = c.Return();
         Assert.InRange(p.Y, 0, 1199);
+    }
+
+    [Fact]
+    public void A_jump_lands_in_the_middle_and_trailing_motion_does_not_bounce_back()
+    {
+        var c = Controller(RightLayout());
+        var plan = c.Enter(600, 10, toCenter: true);
+        Assert.Equal(590, plan.IpadPosition.X, 1);
+        Assert.Equal(410, plan.IpadPosition.Y, 1);
+        // keep shaking hard toward the shared edge for half a second: no return
+        double t = 10;
+        for (int i = 0; i < 30; i++) Assert.Null(c.OnIpadMouse(-200, 0, t += 0.016, false));
+        Assert.True(c.OnIpad);
+    }
+
+    [Fact]
+    public void After_returning_the_edge_does_not_immediately_send_you_back()
+    {
+        var c = Controller(RightLayout());
+        c.Enter(600, 0);
+        var p = c.Return(5.0, toCenter: true);
+        Assert.Equal(960, p.X, 1);                      // jump back lands mid-screen
+        for (int i = 0; i < 20; i++) Assert.Null(c.OnPcPointer(1919, 600, 30, 0, 5.0 + i * 0.02, false));
+        Assert.NotNull(c.OnPcPointer(1919, 600, 30, 0, 6.0, false));   // later it works again
     }
 }

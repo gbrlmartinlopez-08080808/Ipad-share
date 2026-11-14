@@ -135,10 +135,14 @@ internal sealed class Overlays : IDisposable
         return true;
     }
 
+    private byte _lastAlpha;
+
     private void ApplyGlowAlpha(double level)
     {
         if (_glow == IntPtr.Zero) return;
         byte alpha = (byte)Math.Round(Math.Clamp(level, 0, 1) * 230);
+        if (alpha == _lastAlpha && (alpha == 0) == !_glowVisible) return;   // unchanged: no Win32 calls on the hot path
+        _lastAlpha = alpha;
         if (alpha == 0)
         {
             if (_glowVisible) { ShowWindow(_glow, SW_HIDE); _glowVisible = false; }

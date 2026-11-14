@@ -8,8 +8,9 @@ namespace IpadShare.App.Calibration;
 
 /// <summary>
 /// Runs the pointer calibration: finds the pointer on the Safari page, centres it with closed-loop
-/// moves, then sends controlled strokes at increasing speeds and records where iPadOS actually
-/// moved the pointer. The fitted curve is iPadOS's real acceleration for this iPad's Tracking Speed.
+/// moves, then sends controlled strokes at increasing speeds and records where iPadOS actually moved
+/// the pointer. Survives short Bluetooth or page drop-outs (waits and resumes), retries a bad
+/// measurement once, and measures report timing from what really reached the radio.
 /// </summary>
 internal sealed class CalibrationRunner
 {
@@ -18,6 +19,7 @@ internal sealed class CalibrationRunner
     private readonly object _lock = new();
     private double _x = double.NaN, _y = double.NaN, _vw, _vh;
     private long _updates;
+    private readonly List<(int counts, double t)> _delivered = new();
 
     public CalibrationRunner(AppController.CalibrationHost host, CalibrationServer server)
     {
@@ -52,6 +54,11 @@ internal sealed class CalibrationRunner
         }
     }
 
+    private void OnDelivered(int counts, double t)
+    {
+        lock (_delivered) _delivered.Add((counts, t));
+    }
+
     private (double x, double y, long n) Pos() { lock (_lock) return (_x, _y, _updates); }
 
     private async Task Report(string message, double fraction)
@@ -62,7 +69,8 @@ internal sealed class CalibrationRunner
 
     public async Task<GainCurve?> RunAsync(CancellationToken ct)
     {
-        if (!_host.Connected) throw new InvalidOperationException("The iPad isn't connected.");
+        if (!_host.Connected && !await WaitForLink(ct)) throw new InvalidOperationException("The iPad isn't connected.");
+        _host.Delivered += OnDelivered;
         await _host.BeginAsync();
         try
         {
@@ -73,26 +81,32 @@ internal sealed class CalibrationRunner
             lock (_lock) { vw = _vw; vh = _vh; }
             var strokes = CalibrationPlanner.MouseStrokes(vw, GainCurve.DefaultMouse);
             var samples = new List<CalibrationSample>();
-            double gainGuess = 0.6;
+            double gainGuess = 0.5;
 
             for (int i = 0; i < strokes.Count; i++)
             {
                 ct.ThrowIfCancellationRequested();
                 var s = strokes[i];
-                gainGuess = await CenterX(vw, vh, gainGuess, ct);
                 await Report($"Measuring speed {i / 2 + 1} of {strokes.Count / 2}…", 0.08 + 0.88 * i / strokes.Count);
 
-                var start = await Settled(ct);
-                await SendStroke(s, ct);
-                var end = await Settled(ct);
-                var sample = CalibrationPlanner.Evaluate(s, start.x, end.x, vw);
+                CalibrationSample? sample = null;
+                for (int attempt = 0; attempt < 2 && sample == null; attempt++)
+                {
+                    if (!await EnsureReady(ct)) throw new InvalidOperationException("Lost the connection to the iPad for too long. Try again.");
+                    gainGuess = await Center(vw, vh, gainGuess, ct);
+                    var start = await Settled(ct);
+                    var (counts, interval) = await SendStroke(s, ct);
+                    var end = await Settled(ct);
+                    sample = Measure(s, counts, interval, start.x, end.x, vw);
+                    Log.Info($"Calibration stroke {s.UnitsPerReport}×{s.Reports} dir {s.Direction} (attempt {attempt + 1}): " +
+                             $"{start.x:0.0}→{end.x:0.0} pt, {counts} counts every {interval * 1000:0.0} ms " +
+                             (sample != null ? $"→ gain {sample.Gain:0.000} @ {sample.Speed:0} c/s" : "(discarded)"));
+                }
                 if (sample != null) samples.Add(sample);
-                Log.Info($"Calibration stroke {s.UnitsPerReport}×{s.Reports} dir {s.Direction}: {start.x:0.0}→{end.x:0.0} pt " +
-                         (sample != null ? $"gain {sample.Gain:0.000} @ {sample.Speed:0} c/s" : "(discarded)"));
             }
 
             var curve = CalibrationPlanner.Fit(samples);
-            if (curve == null) throw new InvalidOperationException("Not enough clean measurements. Try again with the iPad unlocked and Safari in the foreground.");
+            if (curve == null) throw new InvalidOperationException("Not enough clean measurements. Keep Safari in front and the iPad unlocked, then try again.");
             await Report("Done!", 1);
             await _server.SendAsync(new { t = "done", ok = true, msg = "Calibration complete. You can close this page." });
             return curve;
@@ -104,8 +118,48 @@ internal sealed class CalibrationRunner
         }
         finally
         {
+            _host.Delivered -= OnDelivered;
             await _host.EndAsync(returnToPc: true);
         }
+    }
+
+    /// <summary>Gain from what moved on screen; speed from when the reports actually went out.</summary>
+    private static CalibrationSample? Measure(CalibrationStroke s, int counts, double interval, double startX, double endX, double vw)
+    {
+        double moved = (endX - startX) * s.Direction;
+        if (counts == 0 || moved <= 0.5 || endX <= 1 || endX >= vw - 1) return null;
+        double perReport = Math.Abs(counts) / (double)s.Reports;
+        return new CalibrationSample(perReport / Math.Max(interval, 0.004), moved / Math.Abs(counts));
+    }
+
+    /// <summary>Wait out a short Bluetooth or Safari drop-out; re-find the pointer afterwards.</summary>
+    private async Task<bool> EnsureReady(CancellationToken ct)
+    {
+        bool hadDropout = false;
+        if (!_host.Connected)
+        {
+            hadDropout = true;
+            await Report("Waiting for the iPad to reconnect…", -1);
+            if (!await WaitForLink(ct)) return false;
+            await _host.BeginAsync();          // back onto the iPad after the drop-out
+        }
+        if (!_server.ClientConnected)
+        {
+            hadDropout = true;
+            Progress?.Invoke("Waiting for the Safari page… (keep it open on the iPad)", -1);
+            var sw = Stopwatch.StartNew();
+            while (!_server.ClientConnected && sw.Elapsed < TimeSpan.FromSeconds(20)) await Task.Delay(250, ct);
+            if (!_server.ClientConnected) return false;
+        }
+        if (hadDropout && !await AcquirePointer(ct)) return false;
+        return true;
+    }
+
+    private async Task<bool> WaitForLink(CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        while (!_host.Connected && sw.Elapsed < TimeSpan.FromSeconds(20)) await Task.Delay(250, ct);
+        return _host.Connected;
     }
 
     private async Task<bool> AcquirePointer(CancellationToken ct)
@@ -131,8 +185,8 @@ internal sealed class CalibrationRunner
         return Pos().n > n0 + 2;
     }
 
-    /// <summary>Closed-loop centring of X (and Y once); returns an updated gain estimate.</summary>
-    private async Task<double> CenterX(double vw, double vh, double gain, CancellationToken ct)
+    /// <summary>Closed-loop centring; returns an updated gain estimate.</summary>
+    private async Task<double> Center(double vw, double vh, double gain, CancellationToken ct)
     {
         for (int i = 0; i < 12; i++)
         {
@@ -144,7 +198,7 @@ internal sealed class CalibrationRunner
             for (int k = 0; k < steps; k++)
             {
                 _host.Move((int)Math.Round(cx / steps), (int)Math.Round(cy / steps));
-                await Task.Delay(12, ct);
+                await Task.Delay(15, ct);
             }
             var q = await Settled(ct);
             double moved = Math.Abs(q.x - p.x);
@@ -159,7 +213,7 @@ internal sealed class CalibrationRunner
         long last = Pos().n;
         var quiet = Stopwatch.StartNew();
         var total = Stopwatch.StartNew();
-        while (quiet.ElapsedMilliseconds < 140 && total.ElapsedMilliseconds < 1500)
+        while (quiet.ElapsedMilliseconds < 160 && total.ElapsedMilliseconds < 1500)
         {
             await Task.Delay(20, ct);
             long n = Pos().n;
@@ -169,16 +223,37 @@ internal sealed class CalibrationRunner
         return (p.x, p.y);
     }
 
-    private Task SendStroke(CalibrationStroke s, CancellationToken ct) => Task.Run(() =>
+    /// <summary>Sends the stroke; returns the counts that reached the radio and their real spacing.</summary>
+    private async Task<(int counts, double interval)> SendStroke(CalibrationStroke s, CancellationToken ct)
     {
-        var sw = Stopwatch.StartNew();
-        int counts = (int)Math.Round(s.UnitsPerReport) * s.Direction;
-        for (int i = 0; i < s.Reports; i++)
+        lock (_delivered) _delivered.Clear();
+        double spacing = Math.Clamp(_host.ReportInterval, 0.012, 0.045);
+        int perReport = (int)Math.Round(s.UnitsPerReport) * s.Direction;
+        await Task.Run(() =>
         {
-            ct.ThrowIfCancellationRequested();
-            var due = TimeSpan.FromSeconds(i * CalibrationPlanner.ReportInterval);
-            while (sw.Elapsed < due) Thread.Sleep(1);
-            _host.Move(counts, 0);
+            var sw = Stopwatch.StartNew();
+            for (int i = 0; i < s.Reports; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var due = TimeSpan.FromSeconds(i * spacing);
+                while (sw.Elapsed < due) Thread.Sleep(1);
+                _host.Move(perReport, 0);
+            }
+        }, ct);
+        // let the last reports reach the radio
+        var wait = Stopwatch.StartNew();
+        while (wait.ElapsedMilliseconds < 600)
+        {
+            lock (_delivered) if (_delivered.Count >= s.Reports) break;
+            await Task.Delay(10, ct);
         }
-    }, ct);
+        lock (_delivered)
+        {
+            int counts = _delivered.Sum(d => d.counts);
+            double interval = _delivered.Count >= 2
+                ? (_delivered[^1].t - _delivered[0].t) / (_delivered.Count - 1)
+                : spacing;
+            return (counts, interval);
+        }
+    }
 }

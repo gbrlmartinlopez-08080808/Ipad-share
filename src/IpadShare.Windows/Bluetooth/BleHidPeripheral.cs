@@ -37,6 +37,13 @@ internal sealed class BleHidPeripheral : IHidTransport
     private BluetoothAdapter? _adapter;
     private Radio? _radio;
     private GattSession? _session;
+    private string? _sessionDeviceId;
+    private BluetoothLEDevice? _peerDevice;
+    private readonly LinkStateTracker _link = new();
+    private System.Threading.Timer? _poll;
+    private RadioState? _radioState;
+    private double _lastAdvertiseAttempt = double.NegativeInfinity;
+    private int _advertiseRestarts;
     private byte _batteryPercent = 100;
     private TransportState _state = TransportState.Stopped;
     private string? _detail;
@@ -45,6 +52,7 @@ internal sealed class BleHidPeripheral : IHidTransport
     private bool _starting;
     private string? _lastError;
     private CancellationTokenSource? _restartCts;
+    private static double Now => System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
 
     public string Name => "Built-in Bluetooth";
     public TransportState State => _state;
@@ -52,6 +60,8 @@ internal sealed class BleHidPeripheral : IHidTransport
     public string? PeerName => _peer;
     public int MaxReportPayload => Math.Max(20, _mtu - 3);
     public string? AdapterName { get; private set; }
+    /// <summary>Negotiated connection interval (Windows 11 only), in milliseconds.</summary>
+    public double? ConnectionIntervalMs { get; private set; }
     public ulong AdapterAddress { get; private set; }
 
     public event EventHandler? StateChanged;
@@ -94,6 +104,10 @@ internal sealed class BleHidPeripheral : IHidTransport
         lock (_gate) { if (_starting) return; _starting = true; }
         try
         {
+            // Idempotent: a published service that is advertising or connected is never rebuilt.
+            // (Rebuilding while the iPad is connected was what made the link flap.)
+            if (_hid != null && _state is TransportState.Connected or TransportState.Advertising) return;
+
             SetState(TransportState.Starting, null);
             _adapter = await BluetoothAdapter.GetDefaultAsync();
             if (_adapter == null) { SetState(TransportState.Unavailable, "No Bluetooth adapter was found."); return; }
@@ -111,10 +125,13 @@ internal sealed class BleHidPeripheral : IHidTransport
                 AdapterName = _radio.Name;
                 _radio.StateChanged -= OnRadioStateChanged;
                 _radio.StateChanged += OnRadioStateChanged;
+                _radioState = _radio.State;
                 if (_radio.State != RadioState.On) { SetState(TransportState.Unavailable, "Bluetooth is turned off."); return; }
             }
 
-            await PublishAsync();
+            if (_hid == null) await PublishAsync();
+            else EnsureAdvertising(force: true);
+            _poll ??= new System.Threading.Timer(_ => PollLink(), null, 1000, 1000);
             ct.ThrowIfCancellationRequested();
         }
         catch (OperationCanceledException) { throw; }
@@ -136,6 +153,7 @@ internal sealed class BleHidPeripheral : IHidTransport
     private async Task PublishAsync()
     {
         await TearDownAsync();
+        _link.ForceDisconnected();
 
         // ---- HID service ----
         var r = await GattServiceProvider.CreateAsync(HidServiceUuid);
@@ -224,8 +242,7 @@ internal sealed class BleHidPeripheral : IHidTransport
 
         _inputs = inputs;
         _hid.AdvertisementStatusChanged += OnAdvertisementStatusChanged;
-        _hid.StartAdvertising(new GattServiceProviderAdvertisingParameters { IsConnectable = true, IsDiscoverable = true });
-        _battery?.StartAdvertising(new GattServiceProviderAdvertisingParameters { IsConnectable = true, IsDiscoverable = false });
+        EnsureAdvertising(force: true);
         _lastError = null;
         Log.Info($"BLE HID published ({ReportMap.Descriptor.Length}-byte report map), advertising as \"{AdapterName ?? Environment.MachineName}\"");
         SetState(TransportState.Advertising, null);
@@ -295,55 +312,108 @@ internal sealed class BleHidPeripheral : IHidTransport
     }
 
     // ---------------- connection tracking ----------------
-    private void OnSubscribedClientsChanged(GattLocalCharacteristic sender, object args) => _ = UpdateConnectionAsync();
+    private void OnSubscribedClientsChanged(GattLocalCharacteristic sender, object args) => PollLink();
 
-    private async Task UpdateConnectionAsync()
+    private int _polling;
+
+    /// <summary>
+    /// Re-evaluates the link (on subscription changes and once a second). Connected/disconnected
+    /// transitions are debounced by <see cref="LinkStateTracker"/>, so iOS re-subscribing a
+    /// characteristic never looks like a disconnect.
+    /// </summary>
+    private void PollLink()
     {
+        if (Interlocked.Exchange(ref _polling, 1) == 1) return;
         try
         {
+            var inputs = _inputs;
             GattSubscribedClient? client = null;
-            foreach (var ch in _inputs.Values)
+            foreach (var ch in inputs.Values)
             {
                 if (ch.SubscribedClients.Count > 0) { client = ch.SubscribedClients[0]; break; }
             }
+            bool sessionActive = false;
+            try { sessionActive = _session?.SessionStatus == GattSessionStatus.Active; } catch { }
 
-            if (client == null)
+            bool changed = _link.Update(client != null, sessionActive, Now);
+            if (client != null)
             {
-                if (_state == TransportState.Connected)
-                {
-                    Log.Info("iPad disconnected");
-                    _peer = null;
-                    if (_session != null) _session.MaxPduSizeChanged -= OnMtuChanged;
-                    _session = null;
-                    SetState(TransportState.Advertising, null);
-                }
-                return;
+                string id = client.Session.DeviceId.Id;
+                if (id != _sessionDeviceId) _ = AdoptSessionAsync(client.Session);
             }
 
-            if (_state == TransportState.Connected && _session != null && ReferenceEquals(_session, client.Session)) return;
-
-            _session = client.Session;
-            _session.MaxPduSizeChanged -= OnMtuChanged;
-            _session.MaxPduSizeChanged += OnMtuChanged;
-            _mtu = _session.MaxPduSize;
-            string? name = null;
-            try
+            if (changed && _link.Connected)
             {
-                using var dev = await BluetoothLEDevice.FromIdAsync(_session.DeviceId.Id);
-                name = dev?.Name;
-                if (dev != null) RequestLowLatency(dev);
+                Log.Info($"iPad connected: {_peer ?? "iPad"}, ATT MTU {_mtu}");
+                SetState(TransportState.Connected, null);
             }
-            catch (Exception ex) { Log.Warn("Peer lookup: " + ex.Message); }
-            _peer = string.IsNullOrWhiteSpace(name) ? "iPad" : name;
-            Log.Info($"iPad connected: {_peer}, ATT MTU {_mtu}");
-            SetState(TransportState.Connected, null);
+            else if (changed && !_link.Connected)
+            {
+                Log.Info($"iPad disconnected (no subscriptions for {_link.Grace:0} s)");
+                DropSession();
+                SetState(TransportState.Advertising, null);
+                EnsureAdvertising(force: true);
+            }
+            else if (!_link.Connected && _hid != null)
+            {
+                EnsureAdvertising(force: false);
+            }
         }
-        catch (Exception ex) { Log.Error("Connection update", ex); }
+        catch (Exception ex) { Log.Warn("Link poll: " + ex.Message); }
+        finally { Interlocked.Exchange(ref _polling, 0); }
     }
 
-    private static void RequestLowLatency(BluetoothLEDevice dev)
+    private async Task AdoptSessionAsync(GattSession session)
     {
-        // Windows 11 (22000+): ask for the shortest connection interval the iPad accepts.
+        try
+        {
+            DropSession();
+            _session = session;
+            _sessionDeviceId = session.DeviceId.Id;
+            _session.MaxPduSizeChanged += OnMtuChanged;
+            _session.SessionStatusChanged += OnSessionStatusChanged;
+            _mtu = _session.MaxPduSize;
+            var dev = await BluetoothLEDevice.FromIdAsync(_sessionDeviceId);
+            if (dev != null)
+            {
+                _peerDevice = dev;
+                _peer = string.IsNullOrWhiteSpace(dev.Name) ? "iPad" : dev.Name;
+                RequestLowLatency(dev);
+                ReadConnectionParameters(dev);
+            }
+            Log.Info($"Session with {_peer ?? "iPad"} ({_sessionDeviceId}), ATT MTU {_mtu}");
+            StateChanged?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception ex) { Log.Warn("Session setup: " + ex.Message); }
+    }
+
+    private void DropSession()
+    {
+        if (_session != null)
+        {
+            try
+            {
+                _session.MaxPduSizeChanged -= OnMtuChanged;
+                _session.SessionStatusChanged -= OnSessionStatusChanged;
+            }
+            catch { }
+        }
+        _session = null;
+        _sessionDeviceId = null;
+        try { _peerDevice?.Dispose(); } catch { }
+        _peerDevice = null;
+        ConnectionIntervalMs = null;
+    }
+
+    private void OnSessionStatusChanged(GattSession sender, GattSessionStatusChangedEventArgs args)
+    {
+        Log.Info($"GATT session: {args.Status} ({args.Error})");
+        PollLink();
+    }
+
+    private void RequestLowLatency(BluetoothLEDevice dev)
+    {
+        // Windows 11 (22000+): ask for a short connection interval. iPadOS decides; we log the outcome.
         try
         {
             if (!ApiInformation.IsMethodPresent("Windows.Devices.Bluetooth.BluetoothLEDevice", "RequestPreferredConnectionParameters")) return;
@@ -353,6 +423,24 @@ internal sealed class BleHidPeripheral : IHidTransport
         catch (Exception ex) { Log.Warn("Connection parameter request failed: " + ex.Message); }
     }
 
+    private void ReadConnectionParameters(BluetoothLEDevice dev)
+    {
+        try
+        {
+            if (!ApiInformation.IsMethodPresent("Windows.Devices.Bluetooth.BluetoothLEDevice", "GetConnectionParameters")) return;
+            void Read()
+            {
+                var p = dev.GetConnectionParameters();
+                ConnectionIntervalMs = p.ConnectionInterval * 1.25;
+                Log.Info($"Connection interval {ConnectionIntervalMs:0.##} ms, latency {p.ConnectionLatency}, timeout {p.LinkTimeout * 10} ms");
+                StateChanged?.Invoke(this, EventArgs.Empty);
+            }
+            Read();
+            dev.ConnectionParametersChanged += (_, _) => { try { Read(); } catch { } };
+        }
+        catch (Exception ex) { Log.Warn("Connection parameters unavailable: " + ex.Message); }
+    }
+
     private void OnMtuChanged(GattSession sender, object args)
     {
         _mtu = sender.MaxPduSize;
@@ -360,22 +448,63 @@ internal sealed class BleHidPeripheral : IHidTransport
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 
+    // ---------------- advertising ----------------
+    private static readonly GattServiceProviderAdvertisingParameters HidAdvertising =
+        new() { IsConnectable = true, IsDiscoverable = true };
+    private static readonly GattServiceProviderAdvertisingParameters BatteryAdvertising =
+        new() { IsConnectable = true, IsDiscoverable = false };
+
+    /// <summary>
+    /// Keeps the service published and advertised without ever rebuilding it. Many adapters stop
+    /// advertising once the iPad connects (status "Aborted") — that is normal and is ignored while
+    /// connected; when the iPad goes away, advertising is simply started again.
+    /// </summary>
+    private void EnsureAdvertising(bool force)
+    {
+        var hid = _hid;
+        if (hid == null) return;
+        double now = Now;
+        if (!force && now - _lastAdvertiseAttempt < 5) return;
+        _lastAdvertiseAttempt = now;
+        try
+        {
+            if (hid.AdvertisementStatus is not (GattServiceProviderAdvertisementStatus.Started
+                or GattServiceProviderAdvertisementStatus.StartedWithoutAllAdvertisementData))
+            {
+                if (hid.AdvertisementStatus != GattServiceProviderAdvertisementStatus.Created &&
+                    hid.AdvertisementStatus != GattServiceProviderAdvertisementStatus.Stopped)
+                {
+                    try { hid.StopAdvertising(); } catch { }
+                }
+                hid.StartAdvertising(HidAdvertising);
+                _advertiseRestarts++;
+            }
+            var bat = _battery;
+            if (bat != null && bat.AdvertisementStatus is not (GattServiceProviderAdvertisementStatus.Started
+                or GattServiceProviderAdvertisementStatus.StartedWithoutAllAdvertisementData))
+                bat.StartAdvertising(BatteryAdvertising);
+        }
+        catch (Exception ex) { Log.Warn("Start advertising: " + ex.Message); }
+    }
+
     private void OnAdvertisementStatusChanged(GattServiceProvider sender, GattServiceProviderAdvertisementStatusChangedEventArgs args)
     {
-        Log.Info($"Advertising: {args.Status} ({args.Error})");
-        if (args.Status == GattServiceProviderAdvertisementStatus.Aborted)
-        {
-            SetState(TransportState.Error, $"Bluetooth advertising stopped ({args.Error}). Retrying…");
-            ScheduleRestart(TimeSpan.FromSeconds(3));
-        }
+        Log.Info($"Advertising: {args.Status} ({args.Error}){(_link.Connected ? " — iPad connected, ignored" : "")}");
+        // Never rebuild here. If nobody is connected, the 1-second link poll restarts advertising.
     }
 
     private void OnRadioStateChanged(Radio sender, object args)
     {
-        Log.Info($"Bluetooth radio: {sender.State}");
-        if (sender.State == RadioState.On) ScheduleRestart(TimeSpan.FromSeconds(1));
+        var state = sender.State;
+        if (state == _radioState) return;            // Windows raises this for unrelated radio changes too
+        var previous = _radioState;
+        _radioState = state;
+        Log.Info($"Bluetooth radio: {previous} → {state}");
+        if (state == RadioState.On) ScheduleRestart(TimeSpan.FromSeconds(1));
         else
         {
+            _link.ForceDisconnected();
+            DropSession();
             _ = TearDownAsync();
             SetState(TransportState.Unavailable, "Bluetooth is turned off.");
         }
@@ -402,7 +531,7 @@ internal sealed class BleHidPeripheral : IHidTransport
         if (!_inputs.TryGetValue(reportId, out var ch)) return false;
         var bytes = data.ToArray();
         lock (_gate) _lastInput[reportId] = bytes;
-        if (_state != TransportState.Connected) return false;
+        if (!_link.Connected) return false;
         if (bytes.Length > MaxReportPayload) return false;
         try
         {
@@ -431,6 +560,10 @@ internal sealed class BleHidPeripheral : IHidTransport
     public async Task StopAsync()
     {
         _restartCts?.Cancel();
+        _poll?.Dispose();
+        _poll = null;
+        _link.ForceDisconnected();
+        DropSession();
         if (_radio != null) _radio.StateChanged -= OnRadioStateChanged;
         await TearDownAsync();
         SetState(TransportState.Stopped, null);
@@ -453,7 +586,6 @@ internal sealed class BleHidPeripheral : IHidTransport
         _hid = null;
         _battery = null;
         _batteryLevel = null;
-        _session = null;
         _peer = null;
         return Task.CompletedTask;
     }
@@ -473,7 +605,8 @@ internal sealed class BleHidPeripheral : IHidTransport
                $"  Adapter: {AdapterName ?? "?"} ({AdapterAddress:X12}), peripheral role: {_adapter?.IsPeripheralRoleSupported}, " +
                $"LE: {_adapter?.IsLowEnergySupported}, offload: {_adapter?.IsAdvertisementOffloadSupported}\n" +
                $"  Advertising: {_hid?.AdvertisementStatus}\n" +
-               $"  Peer: {_peer ?? "-"}, ATT MTU {_mtu}, max payload {MaxReportPayload}\n" +
+               $"  Peer: {_peer ?? "-"}, ATT MTU {_mtu}, max payload {MaxReportPayload}, interval {(ConnectionIntervalMs is double ci ? ci.ToString("0.##") + " ms" : "unknown")}\n" +
+               $"  Link: connects {_link.Connects}, disconnects {_link.Disconnects}, absorbed blips {_link.AbsorbedBlips}, advertising restarts {_advertiseRestarts}\n" +
                $"  Subscriptions: {string.Join(", ", _inputs.Select(kv => $"#{kv.Key}={kv.Value.SubscribedClients.Count}"))}";
     }
 

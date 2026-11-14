@@ -36,8 +36,8 @@ internal sealed class MainWindow : Form
     private readonly ToggleSwitch _winSpotlight = new(), _iso = new();
 
     // switching
-    private readonly Segmented _resistance = new() { Items = new[] { "Low", "Medium", "High" }, Width = 220 };
-    private readonly ToggleSwitch _glow = new(), _hotkey = new();
+    private readonly Segmented _resistance = new() { Items = new[] { "Light", "Medium", "Firm" }, Width = 220 };
+    private readonly ToggleSwitch _glow = new(), _hotkey = new(), _shake = new();
     private readonly Slider _mouse = new() { Minimum = 0.25, Maximum = 3, Detent = 1, Width = 200 };
     private readonly PillButton _calibrate = new() { Text = "Calibrate…" };
     private SettingRow? _calibrationRow;
@@ -183,7 +183,8 @@ internal sealed class MainWindow : Form
     private Control BuildSwitching()
     {
         var card = new Card("Switching");
-        card.Add(new SettingRow("Crossing resistance", "How firmly to push at the edge before the pointer crosses.", _resistance, W));
+        card.Add(new SettingRow("Crossing", "Light: just move past the edge. Firm: push a little harder first.", _resistance, W));
+        card.Add(new SettingRow("Shake the pointer to switch", "Shake left-right quickly to jump to the other screen, from either side.", _shake, W));
         card.Add(new SettingRow("Edge glow", "Shows the push building up, like Universal Control.", _glow, W));
         card.Add(new SettingRow("Ctrl+Alt+Space switches devices", null, _hotkey, W));
         card.Add(new SettingRow("Mouse speed on iPad", "For a USB or Bluetooth mouse plugged into the laptop.", _mouse, W));
@@ -239,6 +240,7 @@ internal sealed class MainWindow : Form
         _resistance.SetSilently((int)s.Resistance);
         _glow.SetSilently(s.ShowEdgeGlow);
         _hotkey.SetSilently(s.HotkeyEnabled);
+        _shake.SetSilently(s.ShakeToSwitch);
         _mouse.SetSilently(s.MouseSpeed);
         _calibrationInfo.Text = s.Calibration.HasMouse
             ? $"Calibrated {s.Calibration.CalibratedAt:d}. Recalibrate if you change the iPad's Tracking Speed."
@@ -297,6 +299,7 @@ internal sealed class MainWindow : Form
         _resistance.SelectedIndexChanged += (_, _) => Change(s => s.Resistance = (CrossingResistance)_resistance.SelectedIndex);
         _glow.CheckedChanged += (_, _) => Change(s => s.ShowEdgeGlow = _glow.Checked);
         _hotkey.CheckedChanged += (_, _) => Change(s => s.HotkeyEnabled = _hotkey.Checked);
+        _shake.CheckedChanged += (_, _) => Change(s => s.ShakeToSwitch = _shake.Checked);
         _mouse.ValueCommitted += (_, _) => Change(s => s.MouseSpeed = _mouse.Value);
         _calibrate.Click += (_, _) => _tray.ShowCalibration();
 
@@ -321,12 +324,12 @@ internal sealed class MainWindow : Form
         {
             case TransportState.Connected when st.OnIpad:
                 _pill.Set($"Controlling {peer}", Theme.Accent);
-                _subline.Text = "Your keyboard and trackpad are driving the iPad. Push back across the edge, or press Ctrl+Alt+Space, to return.";
+                _subline.Text = "Your keyboard and trackpad are driving the iPad. Move back past the edge, shake the pointer, or press Ctrl+Alt+Space to return.";
                 break;
             case TransportState.Connected:
                 _pill.Set($"Connected to {peer}", Theme.Good);
                 _subline.Text = st.SharingEnabled
-                    ? $"Move the pointer past the {_app.Settings.Arrangement.Side.ToString().ToLowerInvariant()} edge of your screen to use the iPad."
+                    ? $"Move the pointer past the {_app.Settings.Arrangement.Side.ToString().ToLowerInvariant()} edge of your screen (or shake it) to use the iPad."
                     : "Sharing is paused. Turn it on under General.";
                 break;
             case TransportState.Advertising:

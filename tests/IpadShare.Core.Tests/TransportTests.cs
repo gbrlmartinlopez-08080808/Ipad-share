@@ -15,6 +15,7 @@ internal sealed class FakeTransport : IHidTransport
     public string? StatusDetail => null;
     public string? PeerName => "iPad";
     public int MaxReportPayload => 182;
+    public double? ConnectionIntervalMs => 15;
     public event EventHandler? StateChanged { add { } remove { } }
     public event EventHandler<HostReportWrite>? HostWrite { add { } remove { } }
     public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
@@ -233,6 +234,20 @@ public class SettingsTests
         Assert.Equal(TrackpadMode.Native, back.TrackpadMode);
         Assert.Equal("Cmd+Minus", back.GestureActions[GestureKind.PinchIn]);
         Assert.Contains("\"Native\"", s.ToJson());
+    }
+
+    [Fact]
+    public void Old_settings_migrate_to_effortless_switching()
+    {
+        var old = AppSettings.FromJson("""{ "SchemaVersion": 1, "Resistance": "High", "ShakeToSwitch": false, "TrackpadMode": "Native" }""");
+        Assert.Equal(CrossingResistance.Low, old.Resistance);
+        Assert.True(old.ShakeToSwitch);
+        Assert.Equal(TrackpadMode.Translated, old.TrackpadMode);
+        Assert.Equal(AppSettings.CurrentSchema, old.SchemaVersion);
+
+        var current = AppSettings.FromJson("""{ "SchemaVersion": 2, "Resistance": "High", "ShakeToSwitch": false }""");
+        Assert.Equal(CrossingResistance.High, current.Resistance);   // new choices are respected
+        Assert.False(current.ShakeToSwitch);
     }
 
     [Fact]

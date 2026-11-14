@@ -3,13 +3,13 @@ namespace IpadShare.Core.Handoff;
 public sealed class HandoffSettings
 {
     /// <summary>Outward push (in pixel-equivalents) needed at the edge before the pointer crosses.</summary>
-    public double PushThreshold { get; set; } = 60;
-    /// <summary>A push pause longer than this (s) resets the resistance.</summary>
-    public double PushTimeout { get; set; } = 0.15;
+    public double PushThreshold { get; set; } = 15;
+    /// <summary>A push pause longer than this (s) resets the resistance (long enough to re-place a finger).</summary>
+    public double PushTimeout { get; set; } = 0.6;
     /// <summary>Push past the iPad's shared edge (points) needed to come back, when calibrated.</summary>
-    public double ReturnThresholdCalibrated { get; set; } = 30;
-    /// <summary>Same, without calibration (larger so the return is never early).</summary>
-    public double ReturnThresholdUncalibrated { get; set; } = 90;
+    public double ReturnThresholdCalibrated { get; set; } = 25;
+    /// <summary>Same, without calibration (a little larger so the return is never early).</summary>
+    public double ReturnThresholdUncalibrated { get; set; } = 45;
     /// <summary>No return during this time after entering (s).</summary>
     public double EntryGrace { get; set; } = 0.25;
     /// <summary>Slam the iPad pointer against its shared edge on entry so its position is exact.</summary>
@@ -38,6 +38,8 @@ public sealed class HandoffController
     private double _push;
     private double _lastPushTime = double.NegativeInfinity;
     private double _enteredAt;
+    private double _graceUntil = double.NegativeInfinity;
+    private double _crossBlockedUntil = double.NegativeInfinity;
 
     public HandoffController(ScreenLayout layout, HandoffSettings settings, IpadCursorModel model)
     {
@@ -75,7 +77,7 @@ public sealed class HandoffController
     /// <returns>An entry plan when the pointer should cross now; otherwise null.</returns>
     public EntryPlan? OnPcPointer(double x, double y, double dx, double dy, double t, bool buttonsDown)
     {
-        if (OnIpad || !_s.Enabled || !Layout.HasOverlap) { _push = 0; return null; }
+        if (OnIpad || !_s.Enabled || !Layout.HasOverlap || t < _crossBlockedUntil) { _push = 0; return null; }
         if (buttonsDown || !Layout.IsOnCrossingEdge(x, y)) { _push = 0; return null; }
 
         double outward = Layout.Outward(dx, dy);
@@ -91,12 +93,15 @@ public sealed class HandoffController
         return Enter(Layout.Along(x, y), t);
     }
 
-    /// <summary>Cross now (hotkey or push). <paramref name="pcAlong"/> is the along-edge pixel to enter at.</summary>
-    public EntryPlan Enter(double pcAlong, double t)
+    /// <summary>Cross now (hotkey, shake or push). <paramref name="pcAlong"/> is the along-edge pixel to enter at.</summary>
+    /// <param name="toCenter">A jump (shake/hotkey) lands in the middle of the iPad instead of at the edge.</param>
+    public EntryPlan Enter(double pcAlong, double t, bool toCenter = false)
     {
         _push = 0;
         OnIpad = true;
         _enteredAt = t;
+        // After a jump, trailing hand motion must not immediately push back out.
+        _graceUntil = t + (toCenter ? 0.9 : _s.EntryGrace);
 
         var moves = new List<(int, int)>();
         var shared = Layout.IpadSharedEdge;
@@ -105,9 +110,11 @@ public sealed class HandoffController
 
         if (_s.SnapOnEntry && Layout.Side.IsHorizontalNeighbour())
         {
-            // A few huge reports toward the shared edge: iPadOS clamps, so X becomes exact.
+            // Two huge reports toward the shared edge: iPadOS clamps, so X becomes exact.
+            // (Kept to two so the user's own motion isn't stuck behind a burst of reports.)
             int dir = shared == EdgeSide.Left ? -1 : 1;
-            for (int i = 0; i < 4; i++) moves.Add((dir * 3000, 0));
+            moves.Add((dir * 6000, 0));
+            moves.Add((dir * 6000, 0));
             Model.PinTo(shared);
         }
         else
@@ -136,37 +143,65 @@ public sealed class HandoffController
             AddEstimatedMove(moves, targetAlong - p.X, 0);
             Model.Place(new PointD(targetAlong, p.Y));
         }
+        if (toCenter)
+        {
+            p = Model.Position;
+            var c = new PointD(Layout.IpadPoints.Width / 2, Layout.IpadPoints.Height / 2);
+            AddEstimatedMove(moves, c.X - p.X, c.Y - p.Y);
+            Model.Place(c);
+        }
         Model.ClearOvershoot();
         return new EntryPlan { Moves = moves, IpadPosition = Model.Position, PcAlong = pcAlong };
     }
 
-    /// <summary>Converts a point delta into moderate mouse reports using the gain at a steady reference speed.</summary>
+    /// <summary>
+    /// Converts a point delta into at most six mouse reports, using the gain the iPad applies at that
+    /// per-report size (so the move lands close to the target without a long burst of reports).
+    /// </summary>
     private void AddEstimatedMove(List<(int, int)> moves, double dxPts, double dyPts)
     {
-        const int perReport = 40;
-        const double referenceSpeed = 40 / 0.0125;  // 40 counts per ~12.5 ms report
-        double g = Model.MouseCurve.Evaluate(referenceSpeed);
-        double cx = dxPts / g, cy = dyPts / g;
-        int steps = (int)Math.Ceiling(Math.Max(Math.Abs(cx), Math.Abs(cy)) / perReport);
-        if (steps == 0) return;
-        double ax = 0, ay = 0;
-        int sx = 0, sy = 0;
+        const int maxReports = 6;
+        const double interval = 0.015;               // the scheduler's typical report spacing
+        double dist = Math.Sqrt(dxPts * dxPts + dyPts * dyPts);
+        if (dist < 1) return;
+        // Pick the per-report size whose resulting motion covers the distance in ≤ maxReports.
+        double perReportPts = Math.Max(dist / maxReports, 20);
+        int steps = (int)Math.Ceiling(dist / perReportPts);
+        double counts = 0;
+        // c · G(c / interval) = perReportPts, solved by bisection (monotone)
+        double lo = 0, hi = perReportPts / Math.Max(1e-4, Model.MouseCurve.Evaluate(0));
+        for (int i = 0; i < 40; i++)
+        {
+            double mid = 0.5 * (lo + hi);
+            if (mid * Model.MouseCurve.Evaluate(mid / interval) < perReportPts) lo = mid; else hi = mid;
+        }
+        counts = 0.5 * (lo + hi);
+        double ux = dxPts / dist, uy = dyPts / dist;
+        double sx = 0, sy = 0;
+        int ix = 0, iy = 0;
         for (int i = 1; i <= steps; i++)
         {
-            ax = cx * i / steps; ay = cy * i / steps;
-            int nx = (int)Math.Round(ax) - sx, ny = (int)Math.Round(ay) - sy;
-            sx += nx; sy += ny;
+            sx += ux * counts; sy += uy * counts;
+            int nx = (int)Math.Round(sx) - ix, ny = (int)Math.Round(sy) - iy;
+            ix += nx; iy += ny;
             if (nx != 0 || ny != 0) moves.Add((nx, ny));
         }
     }
 
     // ---------------- iPad side ----------------
 
-    /// <summary>Feed every mouse motion sent to the iPad. Returns the Windows cursor position when control should come back.</summary>
+    /// <summary>Point delta applied to the model by the last iPad-side motion (for shake detection).</summary>
+    public PointD LastDelta { get; private set; }
+
+    /// <summary>
+    /// Feed every mouse report the iPad actually received (use delivered reports, not produced
+    /// motion, so dropped reports can't make the model drift). Returns the Windows cursor position
+    /// when control should come back.
+    /// </summary>
     public PointD? OnIpadMouse(double dx, double dy, double t, bool buttonsDown)
     {
         if (!OnIpad) return null;
-        Model.ApplyMouse(dx, dy, t);
+        LastDelta = Model.ApplyMouse(dx, dy, t);
         return CheckReturn(t, buttonsDown);
     }
 
@@ -174,26 +209,34 @@ public sealed class HandoffController
     public PointD? OnIpadTouch(double dxMm, double dyMm, double t, bool buttonsDown)
     {
         if (!OnIpad) return null;
-        Model.ApplyTouchMm(dxMm, dyMm, t);
+        LastDelta = Model.ApplyTouchMm(dxMm, dyMm, t);
         return CheckReturn(t, buttonsDown);
     }
 
     private PointD? CheckReturn(double t, bool buttonsDown)
     {
-        if (buttonsDown || t - _enteredAt < _s.EntryGrace) return null;
+        if (buttonsDown || t < _graceUntil) return null;
         double threshold = _s.Calibrated ? _s.ReturnThresholdCalibrated : _s.ReturnThresholdUncalibrated;
         if (Model.Overshoot(Layout.IpadSharedEdge) < threshold) return null;
-        return Return();
+        return Return(t);
     }
 
-    /// <summary>Come back to the PC now (hotkey or push). Returns where to put the Windows cursor.</summary>
-    public PointD Return()
+    /// <summary>Come back to the PC now (push, hotkey or shake). Returns where to put the Windows cursor.</summary>
+    /// <param name="t">Now (seconds); crossing back is briefly blocked so trailing motion can't bounce.</param>
+    /// <param name="toCenter">A jump lands in the middle of the monitor instead of at the edge.</param>
+    public PointD Return(double t = double.NegativeInfinity, bool toCenter = false)
     {
         OnIpad = false;
         _push = 0;
+        _crossBlockedUntil = t + 0.5;
         var p = Model.Position;
         double along = Layout.Side.IsHorizontalNeighbour() ? p.Y : p.X;
         Model.PinTo(Layout.IpadSharedEdge);
+        if (toCenter)
+        {
+            var m = Layout.PcMonitor;
+            return new PointD(m.X + m.Width / 2, m.Y + m.Height / 2);
+        }
         return Layout.ReturnPoint(along);
     }
 

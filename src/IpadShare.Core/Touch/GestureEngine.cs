@@ -15,8 +15,10 @@ public interface IGestureSink
 
 public sealed class GestureSettings
 {
-    /// <summary>Mouse counts per millimetre of finger travel at speed 1.0.</summary>
+    /// <summary>Mouse counts per millimetre of finger travel at speed 1.0 (used when no <see cref="Shaper"/> is set).</summary>
     public double PointerCountsPerMm { get; set; } = 20;
+    /// <summary>Mac-like pointer response through the iPad's acceleration curve (preferred).</summary>
+    public PointerShaper? Shaper { get; set; }
     /// <summary>User pointer speed multiplier (0.25 … 3).</summary>
     public double PointerSpeed { get; set; } = 1.0;
     /// <summary>Wheel notches per millimetre of two-finger travel at scroll speed 1.0.</summary>
@@ -74,6 +76,7 @@ public sealed class GestureEngine
     private Mode _mode = Mode.Idle;
     private int _prevCount;
     private double _prevTime = double.NaN;
+    private double _frameDt = 0.008;
 
     // Session = first finger down → last finger up
     private double _sessionStart;
@@ -131,6 +134,7 @@ public sealed class GestureEngine
     {
         double now = frame.Time;
         double dt = double.IsNaN(_prevTime) ? 0.008 : Math.Clamp(now - _prevTime, 0.001, 0.1);
+        _frameDt = dt;
 
         // ---- update contacts ----
         bool anyNew = false;
@@ -345,6 +349,13 @@ public sealed class GestureEngine
     private void Move(double dxMm, double dyMm)
     {
         if (dxMm == 0 && dyMm == 0) return;
+        if (_s.Shaper is { } shaper)
+        {
+            shaper.Speed = _s.PointerSpeed;
+            var (cx, cy) = shaper.Shape(dxMm, dyMm, _frameDt);
+            _sink.Move(cx, cy);
+            return;
+        }
         double k = _s.PointerCountsPerMm * _s.PointerSpeed;
         _sink.Move(dxMm * k, dyMm * k);
     }

@@ -28,6 +28,8 @@ public interface IHidTransport : IAsyncDisposable
     string? PeerName { get; }
     /// <summary>Largest input-report payload that fits one notification (ATT MTU − 3).</summary>
     int MaxReportPayload { get; }
+    /// <summary>Negotiated BLE connection interval in ms, when the platform reports it.</summary>
+    double? ConnectionIntervalMs { get; }
 
     event EventHandler? StateChanged;
     event EventHandler<HostReportWrite>? HostWrite;

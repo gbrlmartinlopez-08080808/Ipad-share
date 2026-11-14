@@ -70,7 +70,8 @@ internal sealed class CalibrationWindow : Form
             _url.Text = _server.Url;
             _qr.Image = RenderQr(_server.Url!);
             _runner = new CalibrationRunner(_app.CreateCalibrationHost(), _server);
-            _runner.Progress += (msg, v) => Ui(() => { _status.Text = msg; _progress.Value = v; });
+            _runner.Progress += (msg, v) => Ui(() => { _status.Text = msg; if (v >= 0) _progress.Value = v; });
+            _app.StatusChanged += OnAppStatus;
             _server.ClientChanged += () => Ui(UpdateWaiting);
             _app.CancelRequested += OnCancelRequested;
             UpdateWaiting();
@@ -86,6 +87,8 @@ internal sealed class CalibrationWindow : Form
 
     private void OnCancelRequested() => _cts?.Cancel();
 
+    private void OnAppStatus() => Ui(UpdateWaiting);
+
     /// <summary>Marshal to the UI thread, ignoring calls that arrive after the window closed.</summary>
     private void Ui(Action a)
     {
@@ -98,7 +101,7 @@ internal sealed class CalibrationWindow : Form
         if (_running || _done) return;
         if (!_app.Status.Transport.Equals(Core.Transport.TransportState.Connected))
         {
-            _status.Text = "Connect your iPad over Bluetooth first.";
+            _status.Text = "Waiting for your iPad to connect over Bluetooth…";
             _action.Enabled = false;
             return;
         }
@@ -185,6 +188,7 @@ internal sealed class CalibrationWindow : Form
     protected override async void OnFormClosed(FormClosedEventArgs e)
     {
         _app.CancelRequested -= OnCancelRequested;
+        _app.StatusChanged -= OnAppStatus;
         _cts?.Cancel();
         base.OnFormClosed(e);
         await _server.DisposeAsync();

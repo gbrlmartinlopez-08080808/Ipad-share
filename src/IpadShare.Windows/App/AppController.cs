@@ -57,6 +57,12 @@ internal sealed class AppController : IAsyncDisposable
     private readonly Dictionary<int, (double x, double y)> _prevContacts = new();
     private PointD? _pendingReturn;
     private double _lastWatchdog, _lastBattery = double.NegativeInfinity, _lastPushGlow;
+    private readonly PointerShaper _shaper = new();
+    private readonly ShakeDetector _pcShake = new();
+    private readonly ShakeDetector _ipadShake = new();
+    private double _ipadShakeLastT, _enteredAt;
+    private bool _recenterPosted;
+    private (int dx, int dy, double t)? _expectedWarp;   // raw motion our own SetCursorPos may echo
     private long _hookEventsAtWatchdog;
     private double _disconnectedPush, _lastDisconnectedHint = double.NegativeInfinity;
     private ScreenLayout? _layout;
@@ -69,7 +75,7 @@ internal sealed class AppController : IAsyncDisposable
         _transport = new TransportManager(_settings.Transport, _settings.BridgePort);
         _scheduler = new ReportScheduler(_transport) { Accepting = false };
         _keys = new KeyTranslator(new KeyTranslatorOptions());
-        _gestures = new GestureEngine(new GestureSettings(), new Sink(this));
+        _gestures = new GestureEngine(new GestureSettings { Shaper = _shaper }, new Sink(this));
         _model = new IpadCursorModel(IpadModel.IpadAirM1.LandscapePoints, GainCurve.DefaultMouse, GainCurve.DefaultTouch);
         _handoff = new HandoffController(DefaultLayout(), new HandoffSettings(), _model);
     }
@@ -117,6 +123,7 @@ internal sealed class AppController : IAsyncDisposable
 
         _transport.StateChanged += (_, _) => _input.Post(OnTransportStateChanged);
         _transport.HostWrite += (_, w) => _input.Post(() => OnHostWrite(w));
+        _scheduler.MouseDelivered += d => _input.Post(() => OnMouseDelivered(d));
         _scheduler.Start();
 
         SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
@@ -196,6 +203,8 @@ internal sealed class AppController : IAsyncDisposable
 
         _model.MouseCurve = s.Calibration.MouseCurve();
         _model.TouchCurve = s.Calibration.TouchCurve();
+        _shaper.IpadMouseCurve = _model.MouseCurve;
+        _pcShake.Enabled = _ipadShake.Enabled = s.ShakeToSwitch;
         var h = _handoff.Settings;
         h.PushThreshold = s.PushThreshold;
         h.Calibrated = s.Calibration.HasMouse;
@@ -273,7 +282,7 @@ internal sealed class AppController : IAsyncDisposable
         {
             if (!e.Up && _ctrl && _alt)
             {
-                if (!_hotkeySpaceDown) ToggleDevice();
+                if (!_hotkeySpaceDown) ToggleDevice(jump: true);
                 _hotkeySpaceDown = true;
                 return true;
             }
@@ -360,6 +369,8 @@ internal sealed class AppController : IAsyncDisposable
                             }
                         }
                         PcPointer(dx, dy, now);
+                        if (_onIpad) break;                 // the push just crossed
+                        if (_pcShake.Add(_hookX - _prevHookX, _hookY - _prevHookY, now)) { ShakeSwitch(); FlushPendingReturn(); }
                     }
                     break;
             }
@@ -367,6 +378,13 @@ internal sealed class AppController : IAsyncDisposable
         }
 
         // ---- iPad mode: everything is blocked ----
+        if (e.Message == WM_MOUSEMOVE && (e.X != _parkX || e.Y != _parkY) && !_recenterPosted)
+        {
+            // Normally a blocked move leaves the cursor parked. If anything moved it anyway, put it back
+            // right after this event (the same "warp to centre" approach Synergy/Barrier use).
+            _recenterPosted = true;
+            _input.Post(RecenterParkedCursor);
+        }
         // ...except the release of a button that went down on Windows (e.g. hotkey pressed mid-drag),
         // so Windows never keeps a stuck button.
         var released = e.Message switch
@@ -390,7 +408,9 @@ internal sealed class AppController : IAsyncDisposable
             {
                 case WM_MOUSEMOVE:
                     int dx = e.X - _parkX, dy = e.Y - _parkY;
-                    if (dx != 0 || dy != 0) MouseMotion(dx, dy, now);
+                    // An event from before the cursor was parked (still at the screen edge) is stale.
+                    bool stale = now - _enteredAt < 0.15 && Math.Abs(dx) + Math.Abs(dy) > 300;
+                    if ((dx != 0 || dy != 0) && !stale) MouseMotion(dx, dy, now);
                     break;
                 case WM_LBUTTONDOWN: SetMouseButton(MouseButtons.Left, true); break;
                 case WM_LBUTTONUP: SetMouseButton(MouseButtons.Left, false); break;
@@ -428,9 +448,18 @@ internal sealed class AppController : IAsyncDisposable
     // ==================================================================
     // Raw mouse
     // ==================================================================
+    /// <summary>Testing aid: IPADSHARE_IGNORE_RAW_MOUSE=1 uses hook input only (Wine fakes raw input from cursor warps).</summary>
+    private static readonly bool s_ignoreRawMouse = Environment.GetEnvironmentVariable("IPADSHARE_IGNORE_RAW_MOUSE") == "1";
+
     private void OnRawMouse(RawMouseEvent e)
     {
+        if (s_ignoreRawMouse) return;
         if (e.Device == IntPtr.Zero || e.Absolute) return;   // synthesized or remote-desktop input
+        if (_expectedWarp is { } w && e.Time - w.t < 0.1 && Math.Abs(e.Dx - w.dx) <= 2 && Math.Abs(e.Dy - w.dy) <= 2)
+        {
+            _expectedWarp = null;   // an echo of our own cursor warp (some drivers/emulators report one)
+            return;
+        }
         _lastRawMouse = e.Time;
         _rawMouseSeen = true;
         if (!_onIpad)
@@ -464,8 +493,45 @@ internal sealed class AppController : IAsyncDisposable
     private void MouseMotion(double dx, double dy, double now)
     {
         _scheduler.AddMouseMotion(dx, dy);
-        var back = _handoff.OnIpadMouse(dx, dy, now, (_mouseButtons | _gestureButtons) != MouseButtons.None);
-        if (back != null) _pendingReturn = back;
+        // Shake detection must see the motion before it is coalesced for the radio (a quick
+        // back-and-forth would otherwise cancel out). Convert counts to iPad points with the gain model.
+        double dt = Math.Clamp(now - _ipadShakeLastT, 0.002, 0.05);
+        _ipadShakeLastT = now;
+        double g = _model.MouseCurve.Evaluate(Math.Sqrt(dx * dx + dy * dy) / dt);
+        if (_ipadShake.Add(dx * g, dy * g, now)) ShakeSwitch();
+    }
+
+    /// <summary>
+    /// A mouse report reached the radio. The iPad pointer model is driven only by these (not by what
+    /// was produced), so motion lost on the way can't make the model drift away from the real pointer.
+    /// </summary>
+    private void OnMouseDelivered(MouseDelivery d)
+    {
+        if (!d.Tracked)
+        {
+            _calibrationDelivered?.Invoke(d.Dx, d.Time);
+            return;
+        }
+        if (!_onIpad) return;
+        var back = _handoff.OnIpadMouse(d.Dx, d.Dy, d.Time, (_mouseButtons | _gestureButtons) != MouseButtons.None);
+        if (back != null) ReturnToPc(back);
+    }
+
+    private Action<int, double>? _calibrationDelivered;
+
+    private bool _pendingToggle;
+
+    /// <summary>
+    /// Shake the pointer: jump to the other device. Deferred to the end of the current input event,
+    /// because it can fire from inside the gesture engine.
+    /// </summary>
+    private void ShakeSwitch()
+    {
+        if (!_forwardUserInput) return;
+        Log.Info($"Shake → {(_onIpad ? "PC" : "iPad")}");
+        _pcShake.Reset();
+        _ipadShake.Reset();
+        _pendingToggle = true;
     }
 
     private void SetMouseButton(MouseButtons b, bool down)
@@ -519,6 +585,7 @@ internal sealed class AppController : IAsyncDisposable
             {
                 var back = _handoff.OnIpadTouch(fdx, fdy, now, false);
                 if (back != null) _pendingReturn = back;
+                else if (_ipadShake.Add(_handoff.LastDelta.X, _handoff.LastDelta.Y, now)) ShakeSwitch();
             }
         }
         else
@@ -557,12 +624,14 @@ internal sealed class AppController : IAsyncDisposable
     // ==================================================================
     // Switching
     // ==================================================================
-    private void ToggleDevice()
+    /// <param name="jump">Shake/hotkey: land in the middle of the other screen (no edge continuity needed).</param>
+    private void ToggleDevice(bool jump = false)
     {
+        double now = InputThread.Now;
         if (_onIpad)
         {
             if (!_forwardUserInput) CancelRequested?.Invoke();
-            ReturnToPc(_handoff.Return());
+            ReturnToPc(_handoff.Return(now, toCenter: jump));
             return;
         }
         if (_transport.State != TransportState.Connected || _layout == null || !_settings.SharingEnabled)
@@ -573,7 +642,7 @@ internal sealed class AppController : IAsyncDisposable
         GetCursorPos(out var p);
         var (s, e) = _layout.CrossingSegment;
         double along = Math.Clamp(_layout.Along(p.X, p.Y), s, Math.Max(s, e));
-        EnterIpad(_handoff.Enter(along, InputThread.Now), InputThread.Now);
+        EnterIpad(_handoff.Enter(along, now, toCenter: jump), now);
     }
 
     private void EnterIpad(EntryPlan plan, double now)
@@ -586,7 +655,9 @@ internal sealed class AppController : IAsyncDisposable
         _scheduler.Clear();
         _scheduler.ResetButtons();
         _scheduler.Accepting = true;
-        foreach (var (dx, dy) in plan.Moves) _scheduler.AddMouseMotionExact(dx, dy, separateReport: true);
+        foreach (var (dx, dy) in plan.Moves) _scheduler.AddMouseMotionExact(dx, dy, separateReport: true, tracked: false, critical: true);
+        _pcShake.Reset();
+        _ipadShake.Reset();
 
         _native.Reset();
         if (!_nativeActive && _lastTouch != null && now - _lastTouchTime < 0.1) _gestures.Adopt(_lastTouch);
@@ -597,7 +668,8 @@ internal sealed class AppController : IAsyncDisposable
         _parkX = (int)(m.X + m.Width / 2);
         _parkY = (int)(m.Y + m.Height / 2);
         _overlays.ShowCapture();
-        SetCursorPos(_parkX, _parkY);
+        WarpCursor(_parkX, _parkY);
+        _enteredAt = now;
         _overlays.SetGlow(0);
         if (_settings.ShowEdgeGlow) _overlays.Flash(now);
         _input.SetHighResolutionTimer(true);
@@ -606,8 +678,32 @@ internal sealed class AppController : IAsyncDisposable
         RaiseStatus();
     }
 
+    /// <summary>Move the Windows cursor, remembering the motion so a raw-input echo of it is ignored.</summary>
+    private void WarpCursor(int x, int y)
+    {
+        if (GetCursorPos(out var from) && (from.X != x || from.Y != y))
+            _expectedWarp = (x - from.X, y - from.Y, InputThread.Now);
+        SetCursorPos(x, y);
+    }
+
+    private void RecenterParkedCursor()
+    {
+        _recenterPosted = false;
+        if (!_onIpad) return;
+        // Unconditional: some environments move the real pointer even though Windows still reports
+        // it parked; re-asserting the position is cheap and keeps every delta relative to the park point.
+        SetCursorPos(_parkX, _parkY);
+    }
+
     private void FlushPendingReturn()
     {
+        if (_pendingToggle)
+        {
+            _pendingToggle = false;
+            _pendingReturn = null;
+            ToggleDevice(jump: true);
+            return;
+        }
         if (_pendingReturn is PointD p)
         {
             _pendingReturn = null;
@@ -624,10 +720,10 @@ internal sealed class AppController : IAsyncDisposable
         ReleaseEverythingOnIpad();
         _scheduler.Accepting = false;
         _overlays.HideCapture();
-        if (cursor is PointD c) SetCursorPos((int)Math.Round(c.X), (int)Math.Round(c.Y));
+        if (cursor is PointD c) WarpCursor((int)Math.Round(c.X), (int)Math.Round(c.Y));
         _input.SetHighResolutionTimer(false);
         _forwardUserInput = true;
-        Log.Info("← PC");
+        Log.Info($"← PC (pacing {_scheduler.MotionInterval * 1000:0.0} ms, radio send {_scheduler.SendLatencyMs:0.0} ms, {_scheduler.ReportsPerSecond:0} reports/s, model x {_model.Position.X:0})");
         RaiseStatus();
     }
 
@@ -663,7 +759,7 @@ internal sealed class AppController : IAsyncDisposable
                 if (_gestures.NeedsTick) { _gestures.Tick(now); next = 0.008; }
 
                 // A finger lift that never arrived (device glitch): end the touch.
-                if (_gestures.FingerCount > 0 && now - _lastTouchTime > 0.2)
+                if (_gestures.FingerCount > 0 && now - _lastTouchTime > 0.5)
                 {
                     _gestures.Process(TouchFrame.Empty(now));
                     _prevContacts.Clear();
@@ -684,7 +780,7 @@ internal sealed class AppController : IAsyncDisposable
                         if (p.X != _parkX || p.Y != _parkY)
                         {
                             if (_input.HookEvents == _hookEventsAtWatchdog) _input.ReinstallHooks();
-                            SetCursorPos(_parkX, _parkY);
+                            WarpCursor(_parkX, _parkY);
                         }
                         _hookEventsAtWatchdog = _input.HookEvents;
                     }
@@ -712,11 +808,12 @@ internal sealed class AppController : IAsyncDisposable
 
     private void OnTransportStateChanged()
     {
+        _scheduler.SetLinkIntervalHint(_transport.ConnectionIntervalMs);
         UpdateHandoffEnabled();
         UpdateNativeActive();
         if (_transport.State != TransportState.Connected)
         {
-            if (_onIpad) { Log.Info("iPad link lost → back to PC"); ReturnToPc(_handoff.Return()); }
+            if (_onIpad) { Log.Info("iPad link lost → back to PC"); ReturnToPc(_handoff.Return(InputThread.Now)); }
             _scheduler.HiResScroll = false;
             _scheduler.Clear();
             _scheduler.ResetButtons();
@@ -752,7 +849,7 @@ internal sealed class AppController : IAsyncDisposable
     // Commands from the UI
     // ==================================================================
     public void SwitchToIpad() => _input.Post(() => { if (!_onIpad) ToggleDevice(); });
-    public void SwitchToPc() => _input.Post(() => { if (_onIpad) ReturnToPc(_handoff.Return()); });
+    public void SwitchToPc() => _input.Post(() => { if (_onIpad) ReturnToPc(_handoff.Return(InputThread.Now)); });
 
     /// <summary>Host interface for the calibration runner (all calls are marshalled to the input thread).</summary>
     public CalibrationHost CreateCalibrationHost() => new(this);
@@ -775,12 +872,23 @@ internal sealed class AppController : IAsyncDisposable
             _c._forwardUserInput = false;
         });
 
-        public void Move(int dx, int dy) => _c._input.Post(() => _c._scheduler.AddMouseMotionExact(dx, dy, separateReport: true));
+        public void Move(int dx, int dy) =>
+            _c._input.Post(() => _c._scheduler.AddMouseMotionExact(dx, dy, separateReport: true, tracked: false));
+
+        /// <summary>(counts, time) of every calibration report as it reaches the radio.</summary>
+        public event Action<int, double>? Delivered
+        {
+            add => _c._calibrationDelivered += value;
+            remove => _c._calibrationDelivered -= value;
+        }
+
+        /// <summary>Current spacing between paced reports (seconds).</summary>
+        public double ReportInterval => _c._scheduler.MotionInterval;
 
         public Task EndAsync(bool returnToPc) => Run(() =>
         {
             _c._forwardUserInput = true;
-            if (returnToPc && _c._onIpad) _c.ReturnToPc(_c._handoff.Return());
+            if (returnToPc && _c._onIpad) _c.ReturnToPc(_c._handoff.Return(InputThread.Now));
         });
 
         private Task Run(Action a)
@@ -813,6 +921,8 @@ internal sealed class AppController : IAsyncDisposable
         sb.AppendLine();
         sb.AppendLine(_transport.Describe());
         sb.AppendLine($"Scheduler: sent {_scheduler.Sent}, failed {_scheduler.Failed}, avg queue latency {_scheduler.AverageQueueLatencyMs:0.0} ms, hi-res scroll {_scheduler.HiResScroll}");
+        sb.AppendLine($"Critical reports: retried {_scheduler.CriticalRetried}, lost {_scheduler.CriticalLost}");
+        sb.AppendLine($"Pacing: every {_scheduler.MotionInterval * 1000:0.0} ms, radio send latency {_scheduler.SendLatencyMs:0.0} ms, {_scheduler.ReportsPerSecond:0} reports/s, link interval {(_transport.ConnectionIntervalMs is double ci ? ci.ToString("0.##") + " ms" : "unknown")}");
         sb.AppendLine($"Mode: {(_onIpad ? "controlling iPad" : "controlling PC")}, native trackpad active: {_nativeActive}");
         sb.AppendLine($"Hooks installed: {_input.HooksInstalled}, hook events {_input.HookEvents}, raw events {_input.RawEvents}");
         sb.AppendLine();

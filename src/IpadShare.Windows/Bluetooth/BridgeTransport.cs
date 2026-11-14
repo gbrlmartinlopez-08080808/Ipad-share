@@ -33,6 +33,7 @@ internal sealed class BridgeTransport : IHidTransport
     public string? StatusDetail => _detail;
     public string? PeerName { get; private set; }
     public int MaxReportPayload => Math.Max(20, _mtu - 3);
+    public double? ConnectionIntervalMs => _intervalUnits > 0 ? _intervalUnits * 1.25 : null;
     public string? PortName => _port?.PortName;
     public string? FirmwareVersion { get; private set; }
     public bool DescriptorMatches { get; private set; } = true;
