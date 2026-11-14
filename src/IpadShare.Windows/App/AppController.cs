@@ -520,6 +520,9 @@ internal sealed class AppController : IAsyncDisposable
     private Action<int, double>? _calibrationDelivered;
 
     private bool _pendingToggle;
+    private double _lastSwitch = double.NegativeInfinity;
+    /// <summary>After any switch, shakes are ignored this long: the rest of the same shake must not switch back.</summary>
+    private const double ShakeSwitchCooldown = 1.2;
 
     /// <summary>
     /// Shake the pointer: jump to the other device. Deferred to the end of the current input event,
@@ -528,6 +531,7 @@ internal sealed class AppController : IAsyncDisposable
     private void ShakeSwitch()
     {
         if (!_forwardUserInput) return;
+        if (InputThread.Now - _lastSwitch < ShakeSwitchCooldown) { _pcShake.Reset(); _ipadShake.Reset(); return; }
         Log.Info($"Shake → {(_onIpad ? "PC" : "iPad")}");
         _pcShake.Reset();
         _ipadShake.Reset();
@@ -649,6 +653,7 @@ internal sealed class AppController : IAsyncDisposable
     {
         if (_onIpad) return;
         _onIpad = true;
+        _lastSwitch = now;
         _keys.Reset();
         _mouseButtons = _gestureButtons = MouseButtons.None;
         _consumerDown = 0;
@@ -716,6 +721,8 @@ internal sealed class AppController : IAsyncDisposable
     {
         if (!_onIpad) return;
         _onIpad = false;
+        _lastSwitch = InputThread.Now;
+        _pcShake.Reset();
         _handoff.Abort();   // no-op if Return() already ran
         ReleaseEverythingOnIpad();
         _scheduler.Accepting = false;

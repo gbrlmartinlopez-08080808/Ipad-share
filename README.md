@@ -6,7 +6,7 @@
 
 Move the pointer past the edge of your screen and it continues onto the iPad; your keyboard follows. Push back and you're on Windows again. Your laptop appears to the iPad as a Bluetooth keyboard + trackpad, which iPadOS supports natively, so there is no app, no App Store, no profile and no jailbreak.
 
-- **Seamless switching** with a little "push" at the edge, a glow that shows it building up, and corner guards so flinging to a window's ✕ never throws you onto the iPad.
+- **Seamless switching**: just move past the edge of the screen and the pointer continues onto the iPad, and back. Or **shake the pointer** to jump between them. Corner guards mean flinging to a window's ✕ never throws you onto the iPad.
 - **Trackpad that feels right**: tap-to-click, two-finger right-click, tap-and-drag, smooth scrolling with momentum, pinch to zoom, three-finger swipe up for Home (hold for the App Switcher), sideways to switch apps. Tuned in millimetres to *your* touchpad.
 - **Windows shortcuts just work**: Ctrl+C/V/Z/T/W…, Alt+Tab, Ctrl+← word jump, Home/End, Win key for Spotlight. (Prefer Mac-style? One switch.)
 - **Automatic**: pair once; after that the iPad reconnects by itself whenever the laptop is on. The app sits in the tray and starts with Windows.
@@ -46,8 +46,9 @@ The setup guide opens. It takes about a minute:
 
 | You do (on the laptop) | On the iPad |
 | --- | --- |
-| Push the pointer past the iPad's edge | Pointer appears on the iPad; keyboard follows |
-| Push back past the same edge | Back on Windows, at the matching height |
+| Move the pointer past the iPad's edge | Pointer appears on the iPad; keyboard follows |
+| Move back past the same edge | Back on Windows, at the matching height |
+| **Shake the pointer** left-right | Jump to the other screen (lands in the middle) |
 | **Ctrl+Alt+Space** | Jump between devices (always works) |
 | 1-finger move / tap / 2-finger tap | Pointer / click / right-click |
 | Tap, then touch and move | Drag |
@@ -101,7 +102,8 @@ Most recent Intel and Realtek Bluetooth adapters can. If the setup guide says yo
 | Paired before, now won't connect | On the iPad, tap ⓘ next to the laptop › **Forget This Device**, then pair again. |
 | Windows' Task View opens when you 3-finger swipe on the iPad | Windows → **Settings › Bluetooth & devices › Touchpad › Three-finger gestures › Swipes: Nothing** (iPad Share handles them while you're on the iPad). |
 | Wrong characters (e.g. `@`, `ñ`) | Set the iPad's hardware keyboard layout to match the laptop (see above). If ` and < are swapped, turn on *Swap the ` and < keys*. |
-| Coming back to Windows needs a hard push | Run **Calibrate** (or press Ctrl+Alt+Space). |
+| Coming back to Windows needs several swipes | Shake the pointer or press Ctrl+Alt+Space; run **Calibrate** once to make the edge exact. |
+| Pointer feels too slow or fast on the iPad | Adjust *Pointer speed*; calibration makes it match your iPad's Tracking Speed. |
 | Scrolls the wrong way | Turn on *Reverse scrolling*, or change *Natural Scrolling* on the iPad (Settings › General › Trackpad & Mouse). |
 | Anything else | Tray icon › **Diagnostics… › Copy** and include it in an issue. |
 
@@ -124,7 +126,7 @@ Nothing leaves your devices. There is no account, no cloud and no telemetry. The
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full design: the BLE HID-over-GATT device, the HID report map, input capture on Windows, the gesture engine, edge handoff and cursor dead-reckoning, the report scheduler, and the USB bridge.
 
 ```
-src/IpadShare.Core      platform-independent logic (HID, keys, gestures, handoff, scheduler) + 126 unit tests
+src/IpadShare.Core      platform-independent logic (HID, keys, gestures, handoff, scheduler) + 152 unit tests
 src/IpadShare.Windows   the Windows app (hooks, Raw Input, WinRT Bluetooth, tray UI)
 firmware/esp32-bridge   optional ESP32-S3 USB bridge firmware
 ```

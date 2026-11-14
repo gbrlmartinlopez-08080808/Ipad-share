@@ -121,8 +121,15 @@ remember the bond and reconnect automatically.
   you never pair again. The app keeps advertising whenever it is running and
   not connected, and it starts with Windows (tray), so this is automatic.
 * "Connected" is detected when the iPad subscribes to the input-report
-  notifications (`SubscribedClientsChanged`). The iPad's name is read from the
-  session and shown in the UI ("Connected to Gabriel's iPad").
+  notifications (`SubscribedClientsChanged`) and is **debounced**
+  (`LinkStateTracker`): iOS briefly drops and re-adds subscriptions during normal
+  operation, so a disconnect is only declared after 3 s without subscriptions or
+  an active GATT session. The iPad's name is read from the session.
+* The service is **published once and never rebuilt while connected**. Many
+  adapters stop advertising as soon as the iPad connects (status "Aborted"); that
+  is ignored, and advertising is simply restarted in place when the iPad leaves.
+  (Rebuilding on "Aborted" is what made 0.1 appear to connect and disconnect in a
+  loop.) Only real radio off→on transitions trigger a rebuild.
 
 ### 2.4 Latency
 
@@ -270,7 +277,13 @@ geometry. iPadOS does everything else: inertial scrolling, pinch, rotate,
 3-finger Home/App Switcher, tap-to-click (per the iPad's own settings). This is
 the most "Apple" experience. It depends on Section 3.1.
 
-### 5.2 Translated mode (`GestureEngine`)
+### 5.2 Translated mode (`GestureEngine` + `PointerShaper`)
+
+Pointer motion is shaped like a Mac trackpad (≈3 pt/mm when slow for precision,
+up to ≈34 pt/mm on a flick) in iPad points, then converted to mouse counts by
+inverting iPadOS's own acceleration curve (calibrated, or a default estimate), so
+the feel is consistent instead of depending on the iPad's mouse curve.
+
 
 The engine is a complete touchpad driver that runs on the laptop:
 
@@ -313,10 +326,13 @@ laptop and enters the iPad at the height you'd expect.
 
 ### 6.2 PC → iPad
 
-* Crossing requires a deliberate **push**: the cursor must sit on the edge and
-  keep moving outward ~1.5 cm (measured from raw motion), within a short time
-  window. A thin glow at the edge shows the resistance building, like Universal
-  Control's.
+* Crossing is **light by default**: moving past the edge is enough (Medium/Firm
+  add some push-through, measured from raw motion). A thin glow at the edge shows
+  it, like Universal Control's.
+* **Shake to switch**: a quick left-right shake (≥ 3 fast reversals in 0.8 s)
+  jumps to the other screen from either side, landing in the middle. After any
+  switch, edge crossing (0.5 s) and shakes (1.2 s) are briefly ignored so trailing
+  hand motion can't bounce you back.
 * **Corner guards:** the top and bottom ~2.5 % of the edge never cross, so
   flinging to a maximized window's ✕ button doesn't throw you onto the iPad.
 * No crossing while a mouse button is held.
@@ -330,15 +346,18 @@ the iPad reports where it is. The app solves this in three layers:
    toward the shared edge. iPadOS clamps the pointer at its screen edge, so its
    horizontal position becomes **exactly known**, and it is exactly where it
    should appear. It then moves vertically to the matching height.
-2. **Dead reckoning.** Every count sent is integrated through a model of iPadOS
-   pointer acceleration (gain as a function of speed), clamped to the screen.
+2. **Dead reckoning.** Every count **the radio actually delivered** is integrated
+   through a model of iPadOS pointer acceleration (gain as a function of speed),
+   clamped to the screen. Motion lost on the way is never counted, so the model
+   can't drift away from the real pointer.
 3. **Self-correction at edges.** Pushing past an iPad edge pins the real
    pointer there, so whenever the model reaches an edge and you keep pushing,
    model and reality converge again.
 
 **Returning to Windows:** when the modelled pointer is at the shared edge *and*
 you keep pushing past it by a margin, control returns to Windows at the
-matching height. With calibration the margin is small. Without it the margin is
+matching height. The push is remembered for 1.2 s, so it builds up across
+several trackpad swipes with the finger lifted in between. With calibration the margin is small. Without it the margin is
 larger, so the return is never *early*: an early return would steal clicks near
 the iPad's edge, such as the Back button.
 
@@ -367,8 +386,15 @@ it exactly:
   so clicks land exactly where the pointer was.
 * **Trackpad frames:** latest-frame-wins under back-pressure, while preserving
   finger-lift events, so the iPad never sees a "stuck" finger.
-* At most 2 notifications are in flight. Everything else coalesces. Latency
-  stays at one connection interval even if the radio stalls.
+* **Adaptive pacing.** Continuous motion is sent at a steady rhythm (from 10 ms,
+  floor = half the connection interval) that adapts to how long the radio takes
+  to accept each report: when sends slow down, the radio's buffers are filling, so
+  the rhythm backs off; when they speed up again, it returns. Stale motion never
+  piles up into lag followed by a jump.
+* **Critical reports** (keys, button changes, the entry snap) are sent alone, in
+  order, and retried through short link blips, so a lost key-up can never leave a
+  key stuck repeating on the iPad.
+* Up to 2 motion notifications are in flight; everything else coalesces.
 
 ---
 
@@ -414,7 +440,7 @@ done by the iPad (Windows repeat events are ignored), like a real keyboard.
 | Part | Verified by |
 | --- | --- |
 | HID descriptor validity and report sizes | Unit tests (independent descriptor parser, bit-level field checks) |
-| Report encoding, key translation, gesture engine, edge router, cursor model, calibration fit, scheduler, bridge framing | Unit tests (128) |
+| Report encoding, key translation, gesture engine, pointer shaping, shake detection, edge router, cursor model, calibration fit, pacing, critical retries, link debouncing, bridge framing | Unit tests (152) |
 | Firmware ↔ app agreement | Tests compare the firmware's report map byte-for-byte and a gcc-compiled frame against the C# encoder |
 | Builds into a self-contained Windows `.exe` (x64 + ARM64), firmware image | CI (GitHub Actions on Windows) and local cross-build |
 | Real `.exe` end-to-end on Windows APIs: hooks, Raw Input, edge push → crossing, entry snap, typing (⇧, Ctrl→⌘, Home→⌘←), click, scroll, push-back return, Ctrl+Alt+Space, cursor parking, setup guide and settings UI | Automated run under Wine with `--simulate-ipad` and synthetic input (xdotool) |

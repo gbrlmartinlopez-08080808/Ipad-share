@@ -417,7 +417,7 @@ internal sealed class Card : Panel
         {
             _stack.Controls.Add(new Label
             {
-                Text = subtitle, ForeColor = Theme.SubText, AutoSize = true, MaximumSize = new Size(520, 0),
+                Text = subtitle, ForeColor = Theme.SubText, AutoSize = true, MaximumSize = new Size(500, 0),
                 Margin = new Padding(0, 0, 0, 10), BackColor = Theme.Card,
             });
         }
