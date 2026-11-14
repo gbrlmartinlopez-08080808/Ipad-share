@@ -339,7 +339,11 @@ internal sealed class BleHidPeripheral : IHidTransport
             if (client != null)
             {
                 string id = client.Session.DeviceId.Id;
-                if (id != _sessionDeviceId) _ = AdoptSessionAsync(client.Session);
+                if (id != _sessionDeviceId)
+                {
+                    _sessionDeviceId = id;                     // claim it now: one setup per session
+                    _ = AdoptSessionAsync(client.Session, id);
+                }
             }
 
             if (changed && _link.Connected)
@@ -363,17 +367,16 @@ internal sealed class BleHidPeripheral : IHidTransport
         finally { Interlocked.Exchange(ref _polling, 0); }
     }
 
-    private async Task AdoptSessionAsync(GattSession session)
+    private async Task AdoptSessionAsync(GattSession session, string id)
     {
         try
         {
-            DropSession();
+            ReleaseSessionResources();
             _session = session;
-            _sessionDeviceId = session.DeviceId.Id;
             _session.MaxPduSizeChanged += OnMtuChanged;
             _session.SessionStatusChanged += OnSessionStatusChanged;
             _mtu = _session.MaxPduSize;
-            var dev = await BluetoothLEDevice.FromIdAsync(_sessionDeviceId);
+            var dev = await BluetoothLEDevice.FromIdAsync(id);
             if (dev != null)
             {
                 _peerDevice = dev;
@@ -389,6 +392,12 @@ internal sealed class BleHidPeripheral : IHidTransport
 
     private void DropSession()
     {
+        ReleaseSessionResources();
+        _sessionDeviceId = null;
+    }
+
+    private void ReleaseSessionResources()
+    {
         if (_session != null)
         {
             try
@@ -399,7 +408,6 @@ internal sealed class BleHidPeripheral : IHidTransport
             catch { }
         }
         _session = null;
-        _sessionDeviceId = null;
         try { _peerDevice?.Dispose(); } catch { }
         _peerDevice = null;
         ConnectionIntervalMs = null;

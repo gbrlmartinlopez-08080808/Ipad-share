@@ -13,9 +13,16 @@ namespace IpadShare.Core.Transport;
 public sealed class LinkStateTracker
 {
     private double _lostAt = double.NaN;
+    private double _lastSubscribed = double.NaN;
 
     /// <summary>How long subscriptions may be missing before we call it a disconnect.</summary>
     public double Grace { get; set; } = 3.0;
+
+    /// <summary>
+    /// An active session without any subscriptions only keeps the link this long. (Windows may hold
+    /// its own session to the iPad that outlives the iPad listening to us.)
+    /// </summary>
+    public double SessionOnlyLimit { get; set; } = 10.0;
 
     public bool Connected { get; private set; }
 
@@ -30,6 +37,11 @@ public sealed class LinkStateTracker
     /// <summary>Feed the current observation. Returns true when <see cref="Connected"/> changed.</summary>
     public bool Update(bool subscribed, bool sessionActive, double now)
     {
+        if (subscribed) _lastSubscribed = now;
+        // A session alone never starts a connection (it may be Windows' own session to the iPad);
+        // it only sustains one the iPad established, and only for a while.
+        if (!Connected || double.IsNaN(_lastSubscribed) || now - _lastSubscribed > SessionOnlyLimit)
+            sessionActive = false;
         if (subscribed || sessionActive)
         {
             if (!double.IsNaN(_lostAt)) { AbsorbedBlips++; _lostAt = double.NaN; }

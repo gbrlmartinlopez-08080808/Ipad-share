@@ -44,6 +44,25 @@ public class LinkStateTrackerTests
     }
 
     [Fact]
+    public void A_lingering_session_without_subscriptions_does_not_keep_the_link_forever()
+    {
+        var l = new LinkStateTracker { Grace = 1, SessionOnlyLimit = 10 };
+        l.Update(true, true, 0);
+        bool dropped = false;
+        for (double t = 0.5; t < 20 && !dropped; t += 0.5) dropped = l.Update(false, true, t);
+        Assert.True(dropped);
+        Assert.False(l.Connected);
+    }
+
+    [Fact]
+    public void A_session_alone_does_not_count_as_the_ipad_connecting()
+    {
+        var l = new LinkStateTracker();
+        Assert.False(l.Update(false, true, 0));
+        Assert.False(l.Connected);
+    }
+
+    [Fact]
     public void Force_disconnect_is_immediate()
     {
         var l = new LinkStateTracker();
